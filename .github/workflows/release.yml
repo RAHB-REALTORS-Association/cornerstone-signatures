@@ -26,7 +26,11 @@ jobs:
           MICROSOFT_CLIENT_ID: 00000000-0000-4000-8000-000000000002
         run: npm run configure:addin
       - run: npm run validate:addin
-      - run: tar --exclude=.git --exclude=node_modules --exclude=outlook-addin/manifest.xml -czf cornerstone-signatures-${{ github.ref_name }}.tar.gz .
+      - name: Build source archive
+        run: |
+          archive="cornerstone-signatures-${{ github.ref_name }}.tar.gz"
+          tar --exclude=.git --exclude=node_modules --exclude=outlook-addin/manifest.xml -czf "${RUNNER_TEMP}/${archive}" .
+          mv "${RUNNER_TEMP}/${archive}" "${archive}"
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
