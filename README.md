@@ -185,19 +185,6 @@ The persistent volume should be included in infrastructure backups. IT administr
 
 Imports validate the SQLite header, integrity, schema, required columns, foreign keys, template safety, and continued administrator access before replacing live state. Backups contain personal and access-control data and must be stored accordingly.
 
-## Upgrading from Siggen v1
-
-Version 2 has a clean schema baseline and does not carry the historical migration chain.
-
-1. Upgrade the old Siggen installation to its final schema-13 release.
-2. Export its database from **Manage → Data management**.
-3. Start Cornerstone Signatures v2 with a fresh database and persistent volume.
-4. Sign in using an address listed in `INITIAL_IT_ADMINS`.
-5. Import the schema-13 export under **Manage → Data management**.
-6. Confirm roles, settings, templates, deployments, and Outlook delivery before retiring the old service.
-
-Version 2 imports its own backups and final schema-13 v1 exports. Older exports must first be restored and upgraded by the final v1 release.
-
 ## Repository layout
 
 ```text
