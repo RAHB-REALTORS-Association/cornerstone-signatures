@@ -27,5 +27,8 @@
   "devDependencies": {
     "esbuild": "0.28.2",
     "office-addin-manifest": "3.0.0"
+  },
+  "overrides": {
+    "adm-zip": "0.6.1"
   }
 }
