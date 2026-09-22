@@ -19,6 +19,7 @@
   "dependencies": {
     "@azure/msal-browser": "5.21.0",
     "express": "5.1.0",
+    "express-rate-limit": "8.7.0",
     "grapesjs": "0.23.6",
     "grapesjs-mjml": "1.0.8",
     "jose": "6.1.0",

@@ -1,4 +1,5 @@
 import express from 'express';
+import { rateLimit } from 'express-rate-limit';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { createAccessAuthenticator, createAdminAuthenticator, requireAnyRole, requireRole } from './auth.js';
@@ -56,14 +57,31 @@ function signatureIdentityMode(body) {
   return value;
 }
 
-export function createApp({ db, auth = {}, microsoftUserResolver, directoryProvider = null, protectedStaffEmails = [], publicRoot = path.resolve('.'), officeAddinRuntimeUrls = [], outlookConfig = {}, logger = console }) {
+export function createApp({ db, auth = {}, microsoftUserResolver, directoryProvider = null, protectedStaffEmails = [], publicRoot = path.resolve('.'), officeAddinRuntimeUrls = [], outlookConfig = {}, requestLimits = {}, logger = console }) {
   const app = express();
   const protectedStaff = new Set(protectedStaffEmails.map((email) => String(email).toLowerCase()));
   const decorateStaff = (user) => ({ ...user, deletable: !protectedStaff.has(user.email.toLowerCase()) });
   const adminStaff = () => listStaff(db).map(decorateStaff);
   const publicBranding = () => { const settings = getManageSettings(db); return { organizationName: settings.organizationName, ...settings.organizationInfo }; };
   const renderSignature = (html, user) => renderTemplate(html, user, taglineForUser(db, user), getManageSettings(db), customMergeTagValues(db));
+  const rateLimitResponse = (_req, res) => res.status(429).json({ error: { code: 'rate_limited', message: 'Too many requests. Try again shortly.' } });
+  const requestLimiter = rateLimit({
+    windowMs: requestLimits.windowMs ?? 60_000,
+    limit: requestLimits.max ?? 1200,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    skip: (req) => req.path === '/api/health',
+    handler: rateLimitResponse,
+  });
+  const databaseTransferLimiter = rateLimit({
+    windowMs: requestLimits.databaseWindowMs ?? 15 * 60_000,
+    limit: requestLimits.databaseMax ?? 10,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: rateLimitResponse,
+  });
   app.disable('x-powered-by');
+  app.use(requestLimiter);
   app.use(express.json({ limit: '512kb' }));
 
   const outlookLog = (event, details = {}) => logger.info(`[outlook] ${JSON.stringify({ event, ...details })}`);
@@ -586,7 +604,7 @@ export function createApp({ db, auth = {}, microsoftUserResolver, directoryProvi
     const limit = Math.max(1, Math.min(Math.floor(Number(req.query.limit) || 100), 500));
     res.json({ events: db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT ?').all(limit) });
   });
-  admin.get('/database/export', requireRole('it_admin'), async (req, res, next) => {
+  admin.get('/database/export', requireRole('it_admin'), databaseTransferLimiter, async (req, res, next) => {
     try {
       const snapshot = await exportDatabase(db);
       audit(db, req.admin.email, 'database.exported', 'database', 'main', { bytes: snapshot.length });
@@ -600,8 +618,9 @@ export function createApp({ db, auth = {}, microsoftUserResolver, directoryProvi
       res.send(snapshot);
     } catch (error) { next(error); }
   });
-  admin.post('/database/import', requireRole('it_admin'), express.raw({ type: ['application/vnd.sqlite3', 'application/x-sqlite3', 'application/octet-stream'], limit: '100mb' }), (req, res) => {
-    const counts = importDatabase(db, req.body, req.admin.email);
+  admin.post('/database/import', requireRole('it_admin'), databaseTransferLimiter, express.raw({ type: ['application/vnd.sqlite3', 'application/x-sqlite3', 'application/octet-stream'], limit: '100mb' }), (req, res) => {
+    if (!Buffer.isBuffer(req.body)) throw new HttpError(400, 'invalid_database_backup', 'Upload a SQLite backup using a supported database content type.');
+    const counts = importDatabase(db, Buffer.from(req.body), req.admin.email);
     res.json({ restored: true, counts });
   });
   app.use('/api/admin', admin);

@@ -87,16 +87,27 @@ export async function exportDatabase(db) {
   }
 }
 
-export function importDatabase(db, bytes, actor) {
-  if (!Buffer.isBuffer(bytes) || bytes.length < SQLITE_HEADER.length || !bytes.subarray(0, SQLITE_HEADER.length).equals(SQLITE_HEADER)) {
+export function importDatabase(db, input, actor) {
+  if (!Buffer.isBuffer(input)) {
     throw new HttpError(400, 'invalid_database_backup', 'Select a valid SQLite backup exported from Cornerstone Signatures.');
   }
+  // Normalize request-derived data to concrete primitive types before it
+  // reaches filesystem and SQLite APIs. This prevents parameter tampering
+  // from substituting arrays or objects with lookalike methods/properties.
+  const bytes = Buffer.from(input);
+  if (bytes.length < SQLITE_HEADER.length || !bytes.subarray(0, SQLITE_HEADER.length).equals(SQLITE_HEADER)) {
+    throw new HttpError(400, 'invalid_database_backup', 'Select a valid SQLite backup exported from Cornerstone Signatures.');
+  }
+  if (typeof actor !== 'string' || !actor.trim() || actor.length > 320) {
+    throw new HttpError(400, 'invalid_admin_identity', 'A valid administrator identity is required to import a database backup.');
+  }
+  const actorEmail = actor.trim().toLowerCase();
 
   const temporary = temporaryDatabase('siggen-import-');
   let attached = false;
   try {
     writeFileSync(temporary.file, bytes, { flag: 'wx' });
-    const counts = inspectBackup(temporary.file, actor);
+    const counts = inspectBackup(temporary.file, actorEmail);
     db.prepare('ATTACH DATABASE ? AS restore').run(temporary.file);
     attached = true;
     db.exec('PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;');
@@ -109,7 +120,7 @@ export function importDatabase(db, bytes, actor) {
         db.exec(`INSERT INTO main."${table}" (${columnList}) SELECT ${columnList} FROM restore."${table}"`);
       }
       db.prepare(`INSERT INTO audit_log(actor_email,action,entity_type,entity_id,details_json) VALUES (?,'database.imported','database','main',?)`)
-        .run(actor, JSON.stringify({ bytes: bytes.length, counts }));
+        .run(actorEmail, JSON.stringify({ bytes: bytes.length, counts }));
       const foreignKeyErrors = db.prepare('PRAGMA foreign_key_check').all();
       if (foreignKeyErrors.length) throw new HttpError(400, 'invalid_database_backup', 'The backup contains invalid data relationships and was not restored.');
       db.exec('COMMIT');

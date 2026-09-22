@@ -26,6 +26,7 @@ const app = createApp({
   directoryProvider,
   protectedStaffEmails: config.initialItAdmins,
   officeAddinRuntimeUrls: config.officeAddinRuntimeUrls,
+  requestLimits: config.requestLimits,
   outlookConfig: {
     clientId: config.microsoftClientId, tenantId: config.microsoftTenantId, publicBaseUrl: config.publicBaseUrl,
     addinId: config.outlookAddinId, providerName: config.outlookProviderName, sourceCodeUrl: config.sourceCodeUrl,

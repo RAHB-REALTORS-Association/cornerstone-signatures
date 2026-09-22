@@ -70,6 +70,30 @@ describe('Cornerstone Signatures backend', () => {
     assert.deepEqual(body, { ok: true });
   });
 
+  it('rate limits repeated requests with a structured 429 response', async () => {
+    const limitedDb = openDatabase(':memory:');
+    const limitedApp = createApp({
+      db: limitedDb,
+      auth: { env: 'test', devAuthEmail: 'admin@example.com', allowedOrigins: ['https://signatures.test'] },
+      microsoftUserResolver: async () => ({ email: 'admin@example.com', microsoftId: 'test-id' }),
+      requestLimits: { windowMs: 60_000, max: 1 },
+      officeAddinRuntimeUrls: [],
+    });
+    const limitedServer = limitedApp.listen(0, '127.0.0.1');
+    await new Promise((resolve) => limitedServer.once('listening', resolve));
+    const limitedBaseUrl = `http://127.0.0.1:${limitedServer.address().port}`;
+    try {
+      const first = await fetch(`${limitedBaseUrl}/.well-known/microsoft-officeaddins-allowed.json`);
+      assert.equal(first.status, 200);
+      const second = await fetch(`${limitedBaseUrl}/.well-known/microsoft-officeaddins-allowed.json`);
+      assert.equal(second.status, 429);
+      assert.equal((await second.json()).error.code, 'rate_limited');
+    } finally {
+      await new Promise((resolve) => limitedServer.close(resolve));
+      limitedDb.close();
+    }
+  });
+
   it('generates Office add-in discovery metadata from server configuration', async () => {
     const { response, body } = await request('/.well-known/microsoft-officeaddins-allowed.json');
     assert.equal(response.status, 200);
@@ -586,6 +610,13 @@ describe('Cornerstone Signatures backend', () => {
     assert.equal(response.status, 400);
     assert.equal((await response.json()).error.code, 'invalid_database_backup');
     assert.equal(db.prepare(`SELECT value_json FROM app_settings WHERE key='backup_test'`).get().value_json, '"before"');
+
+    response = await fetch(`${baseUrl}/api/admin/database/import`, {
+      method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://signatures.test' },
+      body: JSON.stringify({ length: 16, subarray: ['SQLite format 3'] }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error.code, 'invalid_database_backup');
   });
 
   it('stores MJML source and compiles safe email-compatible HTML', async () => {

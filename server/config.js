@@ -2,6 +2,14 @@ import path from 'node:path';
 
 const isProduction = process.env.NODE_ENV === 'production';
 const port = Number(process.env.PORT || 3000);
+function boundedInteger(name, fallback, minimum, maximum) {
+  if (process.env[name] === undefined || process.env[name] === '') return fallback;
+  const value = Number(process.env[name]);
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be an integer from ${minimum} to ${maximum}.`);
+  }
+  return value;
+}
 const publicBaseUrl = String(process.env.PUBLIC_BASE_URL || (!isProduction ? `http://localhost:${port}` : '')).replace(/\/+$/, '');
 const defaultOfficeAddinRuntimeUrls = [
   `${publicBaseUrl}/outlook-addin/dist/runtime-entry.js`,
@@ -28,6 +36,12 @@ export const config = Object.freeze({
   outlookProviderName: process.env.OUTLOOK_PROVIDER_NAME || 'Cornerstone Signatures',
   supportEmail: process.env.SUPPORT_EMAIL || '',
   sourceCodeUrl: process.env.SOURCE_CODE_URL,
+  requestLimits: Object.freeze({
+    windowMs: boundedInteger('RATE_LIMIT_WINDOW_MS', 60_000, 1_000, 3_600_000),
+    max: boundedInteger('RATE_LIMIT_MAX_REQUESTS', 1200, 1, 100_000),
+    databaseWindowMs: boundedInteger('DATABASE_RATE_LIMIT_WINDOW_MS', 900_000, 60_000, 86_400_000),
+    databaseMax: boundedInteger('DATABASE_RATE_LIMIT_MAX_REQUESTS', 10, 1, 1_000),
+  }),
   devAuthEmail: !isProduction ? process.env.DEV_AUTH_EMAIL : undefined,
   initialItAdmins: String(process.env.INITIAL_IT_ADMINS || '')
     .split(',')
