@@ -1,0 +1,31 @@
+{
+  "name": "cornerstone-signatures",
+  "version": "2.0.0",
+  "description": "Self-hosted Microsoft 365 email signature management",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "DEV_AUTH_EMAIL=admin@example.com INITIAL_IT_ADMINS=admin@example.com node server/index.js",
+    "build:addin": "node scripts/build-classic-runtime.js && esbuild outlook-addin/src/runtime-entry.js --bundle --format=iife --target=es2016 --outfile=outlook-addin/dist/runtime-entry.js && esbuild outlook-addin/src/taskpane-entry.js --bundle --format=iife --target=es2019 --outfile=outlook-addin/dist/taskpane-entry.js",
+    "configure:addin": "node scripts/configure-addin.js",
+    "validate:addin": "office-addin-manifest validate outlook-addin/manifest.xml",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@azure/msal-browser": "5.21.0",
+    "express": "5.1.0",
+    "grapesjs": "0.23.6",
+    "grapesjs-mjml": "1.0.8",
+    "jose": "6.1.0",
+    "mjml": "5.4.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "office-addin-manifest": "3.0.0"
+  }
+}

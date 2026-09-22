@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:addin
+      - name: Generate example manifest
+        env:
+          PUBLIC_BASE_URL: https://signatures.example.com
+          OUTLOOK_ADDIN_ID: 00000000-0000-4000-8000-000000000001
+          OUTLOOK_PROVIDER_NAME: Example Organization
+          MICROSOFT_CLIENT_ID: 00000000-0000-4000-8000-000000000002
+        run: npm run configure:addin
+      - run: npm run validate:addin
+      - run: tar --exclude=.git --exclude=node_modules --exclude=outlook-addin/manifest.xml -czf cornerstone-signatures-${{ github.ref_name }}.tar.gz .
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            cornerstone-signatures-${{ github.ref_name }}.tar.gz
+            outlook-addin/manifest.xml

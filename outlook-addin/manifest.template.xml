@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0" xmlns:mailappor="http://schemas.microsoft.com/office/mailappversionoverrides" xsi:type="MailApp">
+  <Id>__OUTLOOK_ADDIN_ID__</Id>
+  <Version>2.0.0.0</Version>
+  <ProviderName>__OUTLOOK_PROVIDER_NAME__</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Cornerstone Signatures"/>
+  <Description DefaultValue="Automatically applies centrally managed email signatures."/>
+  <IconUrl DefaultValue="__PUBLIC_BASE_URL__/outlook-addin/assets/icon-64.png"/>
+  <HighResolutionIconUrl DefaultValue="__PUBLIC_BASE_URL__/outlook-addin/assets/icon-128.png"/>
+  <SupportUrl DefaultValue="__PUBLIC_BASE_URL__/"/>
+  <AppDomains><AppDomain>__PUBLIC_BASE_URL__</AppDomain></AppDomains>
+  <Hosts><Host Name="Mailbox"/></Hosts>
+  <Requirements><Sets DefaultMinVersion="1.1"><Set Name="Mailbox"/></Sets></Requirements>
+  <FormSettings>
+    <Form xsi:type="ItemRead"><DesktopSettings><SourceLocation DefaultValue="__PUBLIC_BASE_URL__/"/><RequestedHeight>250</RequestedHeight></DesktopSettings></Form>
+  </FormSettings>
+  <Permissions>ReadWriteMailbox</Permissions>
+  <Rule xsi:type="RuleCollection" Mode="Or"><Rule xsi:type="ItemIs" ItemType="Message" FormType="Read"/></Rule>
+  <DisableEntityHighlighting>true</DisableEntityHighlighting>
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/mailappversionoverrides" xsi:type="VersionOverridesV1_0">
+    <VersionOverrides xmlns="http://schemas.microsoft.com/office/mailappversionoverrides/1.1" xsi:type="VersionOverridesV1_1">
+      <Description resid="Description"/>
+      <Requirements><bt:Sets DefaultMinVersion="1.13"><bt:Set Name="Mailbox"/></bt:Sets></Requirements>
+      <Hosts><Host xsi:type="MailHost">
+        <Runtimes><Runtime resid="Runtime.Url"><Override type="javascript" resid="ClassicRuntime.Js"/></Runtime></Runtimes>
+        <DesktopFormFactor>
+          <SupportsSharedFolders>true</SupportsSharedFolders>
+          <ExtensionPoint xsi:type="LaunchEvent"><LaunchEvents>
+            <LaunchEvent Type="OnNewMessageCompose" FunctionName="applyCornerstoneSignature"/>
+            <LaunchEvent Type="OnMessageFromChanged" FunctionName="refreshCornerstoneSignature"/>
+          </LaunchEvents><SourceLocation resid="Runtime.Url"/></ExtensionPoint>
+          <ExtensionPoint xsi:type="MessageComposeCommandSurface"><OfficeTab id="TabDefault"><Group id="ComposeGroup">
+            <Label resid="GroupLabel"/><Control xsi:type="Button" id="OpenTaskpane"><Label resid="ButtonLabel"/><Supertip><Title resid="ButtonLabel"/><Description resid="ButtonDescription"/></Supertip><Icon><bt:Image size="16" resid="Icon.16"/><bt:Image size="32" resid="Icon.32"/><bt:Image size="80" resid="Icon.80"/></Icon><Action xsi:type="ShowTaskpane"><SourceLocation resid="Taskpane.Url"/></Action></Control>
+          </Group></OfficeTab></ExtensionPoint>
+        </DesktopFormFactor>
+        <MobileFormFactor><ExtensionPoint xsi:type="LaunchEvent"><LaunchEvents><LaunchEvent Type="OnNewMessageCompose" FunctionName="applyCornerstoneSignature"/><LaunchEvent Type="OnMessageFromChanged" FunctionName="refreshCornerstoneSignature"/></LaunchEvents><SourceLocation resid="Runtime.Url"/></ExtensionPoint></MobileFormFactor>
+      </Host></Hosts>
+      <Resources>
+        <bt:Images><bt:Image id="Icon.16" DefaultValue="__PUBLIC_BASE_URL__/outlook-addin/assets/icon-16.png"/><bt:Image id="Icon.32" DefaultValue="__PUBLIC_BASE_URL__/outlook-addin/assets/icon-32.png"/><bt:Image id="Icon.80" DefaultValue="__PUBLIC_BASE_URL__/outlook-addin/assets/icon-80.png"/></bt:Images>
+        <bt:Urls><bt:Url id="Taskpane.Url" DefaultValue="__PUBLIC_BASE_URL__/outlook-addin/taskpane.html"/><bt:Url id="Runtime.Url" DefaultValue="__PUBLIC_BASE_URL__/outlook-addin/runtime.html"/><bt:Url id="ClassicRuntime.Js" DefaultValue="__PUBLIC_BASE_URL__/outlook-addin/dist/classic-runtime-entry.js"/></bt:Urls>
+        <bt:ShortStrings><bt:String id="GroupLabel" DefaultValue="Cornerstone Signatures"/><bt:String id="ButtonLabel" DefaultValue="Cornerstone Signatures"/></bt:ShortStrings>
+        <bt:LongStrings><bt:String id="Description" DefaultValue="Automatically applies centrally managed email signatures."/><bt:String id="ButtonDescription" DefaultValue="Preview or reapply your managed signature."/></bt:LongStrings>
+      </Resources>
+      <WebApplicationInfo><Id>__MICROSOFT_CLIENT_ID__</Id><Resource>api://__PUBLIC_HOST__/__MICROSOFT_CLIENT_ID__</Resource><Scopes><Scope>openid</Scope><Scope>profile</Scope></Scopes></WebApplicationInfo>
+    </VersionOverrides>
+  </VersionOverrides>
+</OfficeApp>

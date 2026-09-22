@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#17294a">
+  <title>Cornerstone Signatures Admin</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/outlook-addin/assets/icon-32.png">
+  <link rel="apple-touch-icon" href="/outlook-addin/assets/icon-128.png">
+  <link rel="stylesheet" href="/vendor/grapesjs/css/grapes.min.css">
+  <link rel="stylesheet" href="./styles.css?v=20260921b">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Primary navigation">
+      <button id="sidebar-close" class="sidebar-close" type="button" aria-label="Close navigation">×</button>
+      <a class="brand" href="#dashboard" aria-label="Cornerstone Signatures administration home">
+        <img class="brand-mark" src="/outlook-addin/assets/icon-80.png" alt="">
+        <span><strong>Cornerstone Signatures</strong><small>Administration</small></span>
+      </a>
+      <nav id="nav" class="nav"></nav>
+      <div class="sidebar-foot">
+        <p>Your organization</p>
+      </div>
+    </aside>
+    <button id="sidebar-backdrop" class="sidebar-backdrop" type="button" aria-label="Close navigation" tabindex="-1"></button>
+
+    <div class="workspace">
+      <header class="topbar">
+        <button id="menu-button" class="icon-button menu-button" type="button" aria-label="Toggle navigation" aria-expanded="false">☰</button>
+        <div class="topbar-title"><span>Signature operations</span></div>
+        <div id="identity" class="identity" aria-live="polite"><span class="avatar skeleton"></span><span><b>Loading…</b><small>Checking access</small></span></div>
+      </header>
+      <main id="main" tabindex="-1"></main>
+    </div>
+  </div>
+
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <dialog id="dialog"><form method="dialog"><button class="dialog-close" type="button" value="cancel" aria-label="Close">×</button><div id="dialog-content"></div></form></dialog>
+  <script src="/vendor/grapesjs/grapes.min.js"></script>
+  <script src="/vendor/grapesjs-mjml/index.js"></script>
+  <script type="module" src="./app.js?v=20260921b"></script>
+</body>
+</html>

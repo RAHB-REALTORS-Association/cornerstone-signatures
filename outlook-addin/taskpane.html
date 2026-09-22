@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cornerstone Signatures</title>
+  <style>
+    :root { color-scheme: light; background: #f3f6fb; }
+    html, body { min-height: 100%; background: #f3f6fb; }
+    body { box-sizing: border-box; margin: 0; padding: 24px; color: #0b224e; font: 16px/1.45 "Segoe UI", sans-serif; }
+    h1 { margin: 0 0 8px; font-size: 22px; }
+    p { margin: 0 0 20px; }
+    button { border: 0; border-radius: 5px; padding: 10px 16px; color: white; background: #0b5cab; cursor: pointer; font-weight: 600; }
+    button:disabled { cursor: wait; opacity: .65; }
+    .preferences { display: inline-block; margin-top: 2px; color: #0b5cab; font-weight: 600; }
+    .preferences[hidden] { display: none; }
+    .status { margin: 16px 0; }
+    .success { color: #16753c; }
+    .unavailable { color: #675c00; }
+    .error { color: #b42318; }
+    #preview { margin-top: 24px; padding: 20px 12px; border-top: 1px solid #c7d0dc; border-radius: 0 0 6px 6px; color: #0b224e; background: #fff; overflow-x: auto; }
+  </style>
+  <script src="https://officeapis.public.onecdn.static.microsoft/1/office.js"></script>
+  <script src="/outlook-addin/config.js"></script>
+  <script src="/outlook-addin/dist/taskpane-entry.js" defer></script>
+</head>
+<body>
+  <h1 id="appTitle">Cornerstone Signatures</h1>
+  <p id="appDescription">Preview or reapply your currently assigned signature.</p>
+  <button id="connect" type="button">Connect Microsoft 365</button>
+  <div id="status" class="status" aria-live="polite"></div>
+  <a id="preferences" class="preferences" href="/" target="_blank" rel="noopener" hidden>Manage my signature preferences</a>
+  <div id="preview" hidden></div>
+</body>
+</html>

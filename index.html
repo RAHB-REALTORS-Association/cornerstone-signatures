@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0b224e">
+  <title>Cornerstone Signatures</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/outlook-addin/assets/icon-32.png">
+  <link rel="apple-touch-icon" href="/outlook-addin/assets/icon-128.png">
+  <link rel="stylesheet" href="/static/style.css?v=2.0.0">
+</head>
+<body>
+  <header class="header-container">
+    <a class="site-brand" href="/" aria-label="Cornerstone Signatures home">
+      <img class="brand-icon" src="/outlook-addin/assets/icon-80.png" alt="">
+      <span><strong>Cornerstone Signatures</strong><small>Signature picker</small></span>
+    </a>
+    <div class="header-actions">
+      <a id="adminLink" class="admin-link" href="/admin/" hidden><span>Admin</span></a>
+      <button id="themeToggle" class="theme-toggle" type="button" aria-label="Switch colour theme"><span class="theme-icon">🌙</span></button>
+    </div>
+  </header>
+  <main class="container">
+    <section class="logo-container page-intro">
+      <span class="eyebrow">Managed email signatures</span>
+      <h1 id="signaturePageTitle">Your managed signature</h1>
+      <p id="signaturePageDescription">Preview the approved signature built from your managed staff profile.</p>
+    </section>
+    <section class="workflow-card" aria-labelledby="deliveryHeading">
+      <div class="delivery-summary"><div><span class="eyebrow">Automatic by default</span><h2 id="deliveryHeading">Nothing to install in supported Outlook apps</h2><p>Cornerstone Signatures applies your approved signature when you compose a message. Published updates flow through automatically.</p></div></div>
+      <div class="manual-help"><div><h3>When should I copy a signature manually?</h3><p>Only when you use an unsupported email client or have opted out of automatic delivery.</p></div></div>
+    </section>
+    <section class="picker-card">
+      <div class="section-heading"><div><h2>Signature preview</h2><p>Your signed-in profile is selected automatically when available.</p></div></div>
+      <div class="form-group"><label for="userSelect">Staff member</label><select id="userSelect" class="download-button"><option value="">-- Choose a user --</option></select></div>
+      <section id="selfService" class="self-service" hidden>
+        <div><h3>My managed signature</h3><p>These preferences affect the signature added automatically in Outlook.</p></div>
+        <label id="selfOptOutRow" class="preference-row" hidden><span><strong>Pause my automatic signature</strong><small>You can resume delivery at any time.</small></span><input id="selfOptOut" type="checkbox"></label>
+        <label id="selfTaglineRow" class="preference-field" for="selfTagline" hidden><span><strong>My tagline</strong><small>Used when the published template contains {{tagline}}.</small></span><select id="selfTagline" class="form-input"></select></label>
+        <div class="self-service-actions"><span id="selfServiceStatus" role="status"></span><button id="saveSelfService" type="button" class="download-button">Save preferences</button></div>
+      </section>
+      <div id="signaturePreview" class="signature-preview" hidden></div>
+    </section>
+    <footer class="footer"><p>Need help? Contact your IT administrator. <a href="/source">Source code</a> is available under AGPL-3.0.</p></footer>
+  </main>
+  <script src="/static/script.js?v=2.0.0"></script>
+</body>
+</html>
