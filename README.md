@@ -237,6 +237,8 @@ Pull requests and pushes to `main` run the test suite, rebuild the Outlook bundl
 
 ## License
 
-Cornerstone Signatures is licensed under the [GNU Affero General Public License v3.0 only](LICENSE).
+Cornerstone Signatures is available under AGPL-3.0-only. Organizations requiring alternative terms may apply for a separate licence. Alternative licences may be provided without charge at the project maintainer’s discretion and are governed solely by their written terms.
+
+The complete AGPL-3.0-only terms are included in [LICENSE](LICENSE).
 
 If you run a modified version for users over a network, AGPL-3.0 requires you to offer those users the complete corresponding source for that version. Set `SOURCE_CODE_URL` to the public source tree for the exact deployment, including your modifications.
