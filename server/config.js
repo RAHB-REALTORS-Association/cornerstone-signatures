@@ -18,6 +18,19 @@ const defaultOfficeAddinRuntimeUrls = [
 const officeAddinRuntimeUrls = String(process.env.OFFICE_ADDIN_RUNTIME_URLS || defaultOfficeAddinRuntimeUrls.join(','))
   .split(',').map((url) => url.trim()).filter(Boolean);
 
+function trustProxySetting() {
+  const raw = String(process.env.TRUST_PROXY || '').trim();
+  if (!raw || raw === 'false') return false;
+  if (raw === 'true') return true;
+  if (/^\d+$/.test(raw)) {
+    const hops = Number(raw);
+    if (hops >= 1 && hops <= 10) return hops;
+  }
+  const addresses = raw.split(',').map((value) => value.trim()).filter(Boolean);
+  if (addresses.length) return addresses;
+  throw new Error('TRUST_PROXY must be true, false, a hop count from 1 to 10, or a comma-separated list of trusted addresses/subnets.');
+}
+
 export const config = Object.freeze({
   env: process.env.NODE_ENV || 'development',
   port,
@@ -36,6 +49,7 @@ export const config = Object.freeze({
   outlookProviderName: process.env.OUTLOOK_PROVIDER_NAME || 'Cornerstone Signatures',
   supportEmail: process.env.SUPPORT_EMAIL || '',
   sourceCodeUrl: process.env.SOURCE_CODE_URL,
+  trustProxy: trustProxySetting(),
   requestLimits: Object.freeze({
     windowMs: boundedInteger('RATE_LIMIT_WINDOW_MS', 60_000, 1_000, 3_600_000),
     max: boundedInteger('RATE_LIMIT_MAX_REQUESTS', 1200, 1, 100_000),

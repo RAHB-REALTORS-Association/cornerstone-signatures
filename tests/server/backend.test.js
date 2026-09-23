@@ -94,6 +94,22 @@ describe('Cornerstone Signatures backend', () => {
     }
   });
 
+  it('applies the configured reverse-proxy trust setting', () => {
+    const proxyDb = openDatabase(':memory:');
+    try {
+      const proxyApp = createApp({
+        db: proxyDb,
+        auth: { env: 'test', devAuthEmail: 'admin@example.com', allowedOrigins: ['https://signatures.test'] },
+        microsoftUserResolver: async () => ({ email: 'admin@example.com', microsoftId: 'test-id' }),
+        officeAddinRuntimeUrls: [],
+        trustProxy: 2,
+      });
+      assert.equal(proxyApp.get('trust proxy'), 2);
+    } finally {
+      proxyDb.close();
+    }
+  });
+
   it('generates Office add-in discovery metadata from server configuration', async () => {
     const { response, body } = await request('/.well-known/microsoft-officeaddins-allowed.json');
     assert.equal(response.status, 200);

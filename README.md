@@ -129,12 +129,12 @@ The development command authenticates as the example bootstrap administrator. Yo
 Fill in `.env` from [.env.example](.env.example), then build and run the container:
 
 ```sh
-docker build -t cornerstone-signatures:2.0.0 .
+docker build -t cornerstone-signatures:2.0.1 .
 
 docker run --env-file .env \
   -p 3000:3000 \
   -v cornerstone-signatures-data:/app/data \
-  cornerstone-signatures:2.0.0
+  cornerstone-signatures:2.0.1
 ```
 
 The health endpoint is:
@@ -172,7 +172,7 @@ The canonical list and explanatory comments live in [.env.example](.env.example)
 | Area | Variables |
 | --- | --- |
 | Service | `PORT`, `DATABASE_PATH`, `PUBLIC_BASE_URL`, `SOURCE_CODE_URL`, `SUPPORT_EMAIL` |
-| Rate limiting | `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX_REQUESTS`, `DATABASE_RATE_LIMIT_WINDOW_MS`, `DATABASE_RATE_LIMIT_MAX_REQUESTS` |
+| Rate limiting | `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX_REQUESTS`, `DATABASE_RATE_LIMIT_WINDOW_MS`, `DATABASE_RATE_LIMIT_MAX_REQUESTS`, `TRUST_PROXY` |
 | Cloudflare Access | `CLOUDFLARE_TEAM_DOMAIN`, `CLOUDFLARE_ACCESS_AUD`, `ADMIN_ALLOWED_ORIGINS` |
 | Microsoft Entra | `MICROSOFT_TENANT_ID`, `MICROSOFT_CLIENT_ID`, `MICROSOFT_API_AUDIENCE`, `MICROSOFT_GRAPH_CLIENT_SECRET` |
 | Outlook add-in | `OUTLOOK_ADDIN_ID`, `OUTLOOK_PROVIDER_NAME`, optional `OFFICE_ADDIN_RUNTIME_URLS` |

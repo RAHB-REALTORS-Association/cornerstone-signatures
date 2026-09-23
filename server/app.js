@@ -57,8 +57,9 @@ function signatureIdentityMode(body) {
   return value;
 }
 
-export function createApp({ db, auth = {}, microsoftUserResolver, directoryProvider = null, protectedStaffEmails = [], publicRoot = path.resolve('.'), officeAddinRuntimeUrls = [], outlookConfig = {}, requestLimits = {}, logger = console }) {
+export function createApp({ db, auth = {}, microsoftUserResolver, directoryProvider = null, protectedStaffEmails = [], publicRoot = path.resolve('.'), officeAddinRuntimeUrls = [], outlookConfig = {}, requestLimits = {}, trustProxy = false, logger = console }) {
   const app = express();
+  if (trustProxy !== false) app.set('trust proxy', trustProxy);
   const protectedStaff = new Set(protectedStaffEmails.map((email) => String(email).toLowerCase()));
   const decorateStaff = (user) => ({ ...user, deletable: !protectedStaff.has(user.email.toLowerCase()) });
   const adminStaff = () => listStaff(db).map(decorateStaff);
