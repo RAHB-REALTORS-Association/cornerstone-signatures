@@ -272,7 +272,12 @@ export function createApp({ db, auth = {}, microsoftUserResolver, directoryProvi
         revision: deployment.template_revision,
       });
       try {
-        recordSignatureDelivery(db, classifyOutlookClient(req.get('user-agent'), identity.email, senderUser.email));
+        recordSignatureDelivery(db, classifyOutlookClient(req.get('user-agent'), identity.email, senderUser.email, {
+          hostName: req.query.clientHost,
+          hostVersion: req.query.clientVersion,
+          platform: req.query.clientPlatform,
+          officeVersion: req.query.officeVersion,
+        }));
       } catch (error) {
         outlookLog('signature_metric_failed', { detail: String(error?.message || error).slice(0, 160) });
       }

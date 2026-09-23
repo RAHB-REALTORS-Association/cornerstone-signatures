@@ -15928,10 +15928,22 @@
     }
   }
   async function getManagedSignature({ interactive = false, senderEmail = "" } = {}) {
-    var _a, _b, _c;
+    var _a, _b, _c, _d, _e, _f;
     const accessToken = await getSignatureApiAccessToken({ interactive });
-    const query = senderEmail ? `?sender=${encodeURIComponent(senderEmail)}` : "";
-    const response = await fetch(`${MANAGED_SIGNATURE_URL}${query}`, {
+    const query = new URLSearchParams();
+    if (senderEmail) query.set("sender", senderEmail);
+    try {
+      const mailboxDiagnostics = (_b = (_a = Office.context) == null ? void 0 : _a.mailbox) == null ? void 0 : _b.diagnostics;
+      const contextDiagnostics = (_c = Office.context) == null ? void 0 : _c.diagnostics;
+      if (mailboxDiagnostics == null ? void 0 : mailboxDiagnostics.hostName) query.set("clientHost", mailboxDiagnostics.hostName);
+      if (mailboxDiagnostics == null ? void 0 : mailboxDiagnostics.hostVersion) query.set("clientVersion", mailboxDiagnostics.hostVersion);
+      if (contextDiagnostics == null ? void 0 : contextDiagnostics.platform) query.set("clientPlatform", contextDiagnostics.platform);
+      if (contextDiagnostics == null ? void 0 : contextDiagnostics.version) query.set("officeVersion", contextDiagnostics.version);
+    } catch {
+    }
+    const encodedQuery = query.toString();
+    const suffix = encodedQuery ? `?${encodedQuery}` : "";
+    const response = await fetch(`${MANAGED_SIGNATURE_URL}${suffix}`, {
       method: "GET",
       cache: "no-store",
       headers: {
@@ -15942,8 +15954,8 @@
     if (response.status === 204) return null;
     const body = await readResponseBody(response);
     if (!response.ok) {
-      const code = (body == null ? void 0 : body.code) || ((_a = body == null ? void 0 : body.error) == null ? void 0 : _a.code) || "";
-      const message = (body == null ? void 0 : body.message) || ((_b = body == null ? void 0 : body.error) == null ? void 0 : _b.message) || `Managed signature request failed with HTTP ${response.status}.`;
+      const code = (body == null ? void 0 : body.code) || ((_d = body == null ? void 0 : body.error) == null ? void 0 : _d.code) || "";
+      const message = (body == null ? void 0 : body.message) || ((_e = body == null ? void 0 : body.error) == null ? void 0 : _e.message) || `Managed signature request failed with HTTP ${response.status}.`;
       throw new ManagedSignatureError(message, { status: response.status, code });
     }
     const html = body == null ? void 0 : body.html;
@@ -15956,7 +15968,7 @@
     return {
       html,
       templateName: body.templateName || "",
-      version: (_c = body.version) != null ? _c : "",
+      version: (_f = body.version) != null ? _f : "",
       user: body.user || null,
       sender: body.sender || null,
       signatureIdentityMode: body.signatureIdentityMode || "signed_in"

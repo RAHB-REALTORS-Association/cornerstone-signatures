@@ -97,9 +97,19 @@
 
     function requestSignature(token, senderEmail, event, clearWhenUnavailable) {
         var url = SIGNATURE_URL;
-        if (senderEmail) {
-            url += '?sender=' + encodeURIComponent(senderEmail);
+        var params = [];
+        if (senderEmail) params.push('sender=' + encodeURIComponent(senderEmail));
+        try {
+            var mailboxDiagnostics = Office.context && Office.context.mailbox && Office.context.mailbox.diagnostics;
+            var contextDiagnostics = Office.context && Office.context.diagnostics;
+            if (mailboxDiagnostics && mailboxDiagnostics.hostName) params.push('clientHost=' + encodeURIComponent(mailboxDiagnostics.hostName));
+            if (mailboxDiagnostics && mailboxDiagnostics.hostVersion) params.push('clientVersion=' + encodeURIComponent(mailboxDiagnostics.hostVersion));
+            if (contextDiagnostics && contextDiagnostics.platform) params.push('clientPlatform=' + encodeURIComponent(contextDiagnostics.platform));
+            if (contextDiagnostics && contextDiagnostics.version) params.push('officeVersion=' + encodeURIComponent(contextDiagnostics.version));
+        } catch (error) {
+            // Analytics hints are optional and must never interrupt delivery.
         }
+        if (params.length) url += '?' + params.join('&');
 
         fetch(url, {
             method: 'GET',

@@ -29,8 +29,21 @@ async function readResponseBody(response) {
  */
 export async function getManagedSignature({ interactive = false, senderEmail = '' } = {}) {
     const accessToken = await getSignatureApiAccessToken({ interactive });
-    const query = senderEmail ? `?sender=${encodeURIComponent(senderEmail)}` : '';
-    const response = await fetch(`${MANAGED_SIGNATURE_URL}${query}`, {
+    const query = new URLSearchParams();
+    if (senderEmail) query.set('sender', senderEmail);
+    try {
+        const mailboxDiagnostics = Office.context?.mailbox?.diagnostics;
+        const contextDiagnostics = Office.context?.diagnostics;
+        if (mailboxDiagnostics?.hostName) query.set('clientHost', mailboxDiagnostics.hostName);
+        if (mailboxDiagnostics?.hostVersion) query.set('clientVersion', mailboxDiagnostics.hostVersion);
+        if (contextDiagnostics?.platform) query.set('clientPlatform', contextDiagnostics.platform);
+        if (contextDiagnostics?.version) query.set('officeVersion', contextDiagnostics.version);
+    } catch {
+        // Analytics hints are optional and must never interrupt delivery.
+    }
+    const encodedQuery = query.toString();
+    const suffix = encodedQuery ? `?${encodedQuery}` : '';
+    const response = await fetch(`${MANAGED_SIGNATURE_URL}${suffix}`, {
         method: 'GET',
         cache: 'no-store',
         headers: {

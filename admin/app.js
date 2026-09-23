@@ -159,11 +159,23 @@ async function dashboard() {
   const clientRows=(analytics.clients||[]).map(item=>el('li',{},el('span',{},el('strong',{},item.family||'Unknown client'),el('small',{class:'muted block'},[item.platform,item.version&&`version ${item.version}`].filter(Boolean).join(' · '))),el('b',{},Number(item.count||0).toLocaleString())));
   const usageLabels={primary:'Primary address',alternate_from:'Alternate From (send-as, delegated, or shared)'};
   const usageRows=(analytics.usage||[]).map(item=>el('li',{},el('span',{},usageLabels[item.type]||item.type),el('b',{},Number(item.count||0).toLocaleString())));
-  const clients=el('section',{class:'card card-pad stack analytics-card'},el('div',{},el('h3',{},'Outlook clients'),el('p',{class:'muted'},`${analyticsPeriod} · Successful managed signature deliveries`)),clientRows.length?el('ul',{class:'analytics-list'},...clientRows):el('p',{class:'muted'},'Client analytics will appear after new signatures are delivered.'));
-  const fromUsage=el('section',{class:'card card-pad stack analytics-card'},el('div',{},el('h3',{},'From-address usage'),el('p',{class:'muted'},`${analyticsPeriod} · Primary versus alternate sending`)),usageRows.length?el('ul',{class:'analytics-list'},...usageRows):el('p',{class:'muted'},'From-address analytics will appear after new signatures are delivered.'));
+  const clientFamilyMap=(analytics.clients||[]).reduce((entries,item)=>{const key=item.family||'Unknown client';const current=entries.get(key)||{label:key,count:0};current.count+=Number(item.count)||0;entries.set(key,current);return entries;},new Map());
+  const clientFamilies=[...clientFamilyMap.values()];
+  const clientChart=pieChart(clientFamilies,'Outlook client family distribution');
+  const usageChart=pieChart((analytics.usage||[]).map(item=>({label:usageLabels[item.type]||item.type,count:Number(item.count)||0})),'Primary and alternate From-address distribution');
+  const clients=el('section',{class:'card card-pad stack analytics-card'},el('div',{},el('h3',{},'Outlook clients'),el('p',{class:'muted'},`${analyticsPeriod} · Successful managed signature deliveries`)),clientRows.length?el('div',{class:'analytics-chart-layout'},clientChart,el('div',{},el('p',{class:'muted analytics-detail-label'},'Platform and version detail'),el('ul',{class:'analytics-list'},...clientRows))):el('p',{class:'muted'},'Client analytics will appear after new signatures are delivered.'));
+  const fromUsage=el('section',{class:'card card-pad stack analytics-card'},el('div',{},el('h3',{},'From-address usage'),el('p',{class:'muted'},`${analyticsPeriod} · Primary versus alternate sending`)),usageRows.length?usageChart:el('p',{class:'muted'},'From-address analytics will appear after new signatures are delivered.'));
   main.replaceChildren(pageHead('Good to see you', 'Monitor signature coverage and make controlled changes across your organization.'),metrics,el('div',{class:'grid two dashboard-grid'},activity,readiness),el('div',{class:'grid two dashboard-grid'},clients,fromUsage));
 }
 function metric(label,value,note){return el('article',{class:'card metric'},el('span',{class:'label'},label),el('strong',{},value),el('small',{},note));}
+function pieChart(items,ariaLabel){
+  const palette=['#2563eb','#16a34a','#f59e0b','#7c3aed','#0891b2','#dc2626','#4f46e5','#64748b'];
+  const values=items.filter(item=>Number(item.count)>0);const total=values.reduce((sum,item)=>sum+Number(item.count),0);let cursor=0;
+  const stops=values.map((item,index)=>{const start=cursor;cursor+=Number(item.count)/total*100;return `${palette[index%palette.length]} ${start}% ${cursor}%`;});
+  const chart=el('div',{class:'pie-chart',style:`background:conic-gradient(${stops.join(',')})`,role:'img','aria-label':`${ariaLabel}: ${values.map(item=>`${item.label} ${item.count}`).join(', ')}`},el('span',{},total.toLocaleString(),el('small',{},'deliveries')));
+  const legend=el('ul',{class:'pie-legend'},...values.map((item,index)=>el('li',{},el('i',{style:`background:${palette[index%palette.length]}`}),el('span',{},item.label),el('b',{},`${Math.round(Number(item.count)/total*100)}%`))));
+  return el('div',{class:'pie-wrap'},chart,legend);
+}
 
 async function users() {
   const [usersPayload,syncPayload]=await Promise.all([api(`${API}/users`),api(`${API}/directory-sync`)]);

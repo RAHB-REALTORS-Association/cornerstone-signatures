@@ -20,6 +20,8 @@ test('classic Outlook runtime avoids unsupported JavaScript syntax', async () =>
   for (const pattern of unsupported) assert.doesNotMatch(source, pattern);
   assert.match(source, /OfficeRuntime\.auth\.getAccessToken/);
   assert.match(source, /var SIGNATURE_URL = __SIGNATURE_URL__/);
+  assert.match(source, /mailboxDiagnostics\.hostName/);
+  assert.match(source, /clientPlatform=/);
   assert.match(source, /Office\.actions\.associate\('applyCornerstoneSignature'/);
   assert.match(source, /Office\.actions\.associate\('refreshCornerstoneSignature'/);
 });
