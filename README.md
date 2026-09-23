@@ -14,9 +14,10 @@ It is designed for organizations that want the capabilities of a commercial sign
 - Resolves overlapping audiences through configurable integer priorities
 - Schedules future deployments and preserves deployment history
 - Lets IT override inaccurate titles, office locations, and phone numbers without changing Entra
-- Maps Entra office locations to exact text used in signatures
+- Maps Entra office locations to exact text used in signatures, with an optional fallback for blank Entra locations
 - Manages organization links, custom merge tags, approved taglines, and campaign content
-- Supports optional per-user self-service opt-out and tagline selection
+- Supports optional per-user self-service opt-out and tagline selection, plus user-selected admin-approved professional designations
+- Reports aggregate Outlook client/version and primary-versus-alternate From usage analytics
 - Records administrative activity and signature-delivery counts
 - Exports and imports the complete SQLite database from the admin interface
 
@@ -75,7 +76,7 @@ Both formats support managed merge tags:
 
 ```text
 {{displayName}} {{firstName}} {{lastName}} {{title}}
-{{phone}} {{email}} {{officeLocation}} {{locations}} {{tagline}}
+{{phone}} {{email}} {{officeLocation}} {{locations}} {{tagline}} {{designations}}
 {{organizationName}} {{websiteUrl}} {{facebookUrl}} {{instagramUrl}}
 {{linkedinUrl}} {{xUrl}} {{threadsUrl}} {{blueskyUrl}} {{youtubeUrl}}
 ```
@@ -129,12 +130,12 @@ The development command authenticates as the example bootstrap administrator. Yo
 Fill in `.env` from [.env.example](.env.example), then build and run the container:
 
 ```sh
-docker build -t cornerstone-signatures:2.0.3 .
+docker build -t cornerstone-signatures:2.1.0 .
 
 docker run --env-file .env \
   -p 3000:3000 \
   -v cornerstone-signatures-data:/app/data \
-  cornerstone-signatures:2.0.3
+  cornerstone-signatures:2.1.0
 ```
 
 The health endpoint is:
@@ -143,7 +144,7 @@ The health endpoint is:
 GET /api/health
 ```
 
-Do not replace or detach the persistent volume during upgrades. It contains staff, roles, settings, templates, audiences, deployments, schedules, taglines, custom tags, and audit history.
+Do not replace or detach the persistent volume during upgrades. It contains staff, roles, settings, templates, audiences, deployments, schedules, taglines, professional-designation selections, aggregate client analytics, custom tags, and audit history. Version 2.1 migrates a version 2.0 database in place.
 
 For the complete Access policies, Entra registration, permissions, manifest generation, and Microsoft 365 deployment sequence, follow the [deployment guide](docs/DEPLOYMENT.md).
 

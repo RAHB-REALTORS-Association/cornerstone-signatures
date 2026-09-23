@@ -148,6 +148,11 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .preference-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-secondary); }
 .preference-row input { width: 18px; height: 18px; flex: none; accent-color: var(--accent-color); }
 .preference-field { display: grid; gap: 7px; }
+.designation-picker { min-width:0;margin:0;padding:14px;border:1px solid var(--border-color);border-radius:10px;background:var(--bg-secondary); }
+.designation-picker legend { padding:0 5px;font-weight:700; }
+.designation-picker>div { display:flex;flex-wrap:wrap;gap:8px;margin-top:6px; }
+.designation-picker>div label { display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border:1px solid var(--border-color);border-radius:999px;background:var(--bg-subtle);cursor:pointer; }
+.designation-picker input { width:16px;height:16px;min-height:0;accent-color:var(--accent-color); }
 .self-service-actions { display: flex; align-items: center; justify-content: flex-end; gap: 14px; }
 .self-service-actions span { margin-right: auto; color: var(--text-secondary); font-size: 13px; }
 

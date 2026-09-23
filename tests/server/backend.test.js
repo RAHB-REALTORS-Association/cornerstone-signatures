@@ -113,6 +113,31 @@ describe('Cornerstone Signatures backend', () => {
     }
   });
 
+  it('upgrades a version 2.0 database in place without losing staff', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'siggen-v20-upgrade-'));
+    const databasePath = path.join(directory, 'siggen.db');
+    let legacy = openDatabase(databasePath);
+    legacy.prepare(`INSERT INTO staff(email,first_name,last_name,title) VALUES ('legacy@example.com','Legacy','Person','Director')`).run();
+    legacy.close();
+    legacy = new DatabaseSync(databasePath);
+    legacy.exec(`DROP TABLE signature_analytics;
+      ALTER TABLE staff DROP COLUMN designation_keys_json;
+      DELETE FROM schema_migrations WHERE version=210;
+      INSERT OR IGNORE INTO schema_migrations(version) VALUES (200)`);
+    legacy.close();
+
+    const upgraded = openDatabase(databasePath);
+    try {
+      assert.equal(upgraded.prepare(`SELECT title FROM staff WHERE email='legacy@example.com'`).get().title, 'Director');
+      assert.ok(upgraded.prepare('PRAGMA table_info(staff)').all().some((column) => column.name === 'designation_keys_json'));
+      assert.ok(upgraded.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='signature_analytics'").get());
+      assert.ok(upgraded.prepare('SELECT 1 FROM schema_migrations WHERE version=210').get());
+    } finally {
+      upgraded.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('generates Office add-in discovery metadata from server configuration', async () => {
     const { response, body } = await request('/.well-known/microsoft-officeaddins-allowed.json');
     assert.equal(response.status, 200);
@@ -359,7 +384,8 @@ describe('Cornerstone Signatures backend', () => {
           websiteUrl: 'https://example.test', facebookUrl: '', instagramUrl: '', linkedinUrl: '',
           xUrl: '', threadsUrl: '', blueskyUrl: '', youtubeUrl: '',
         },
-        locationMappings: [{ source: 'Headquarters', output: 'Headquarters | Satellite Office | Branch Office | Regional Office' }],
+        locationMappings: [{ source: 'Headquarters', output: 'Headquarters | Satellite Office | Branch Office | Regional Office', isDefault: true }],
+        designationOptions: [{ label: 'REALTOR®' }, { label: 'CIPS' }],
         directorySchedule: { enabled: true, intervalHours: 6 },
         directoryDefaults: { visible: false, applicable: true, canSelfOptOut: true, canChooseTagline: true, signatureIdentityMode: 'mailbox' },
       }),
@@ -367,7 +393,8 @@ describe('Cornerstone Signatures backend', () => {
     assert.equal(result.response.status, 200);
     assert.equal(result.body.organizationName, 'Example Association');
     assert.equal(result.body.organizationInfo.websiteUrl, 'https://example.test');
-    assert.deepEqual(result.body.locationMappings, [{ source: 'Headquarters', output: 'Headquarters | Satellite Office | Branch Office | Regional Office' }]);
+    assert.deepEqual(result.body.locationMappings, [{ source: 'Headquarters', output: 'Headquarters | Satellite Office | Branch Office | Regional Office', isDefault: true }]);
+    assert.deepEqual(result.body.designationOptions, [{ key: 'realtor', label: 'REALTOR®' }, { key: 'cips', label: 'CIPS' }]);
     assert.equal(result.body.directorySchedule.enabled, true);
     assert.equal(result.body.directorySchedule.intervalHours, 6);
     assert.equal(result.body.directoryDefaults.visible, false);
@@ -375,16 +402,34 @@ describe('Cornerstone Signatures backend', () => {
     assert.equal(renderTemplate('{{organizationName}}', { first_name: '', last_name: '', title: '', phone: '', office_location: '', email: '' }, null, result.body), 'Example Association');
     assert.equal(renderTemplate('<a href="{{websiteUrl}}">Website</a>', { first_name: '', last_name: '', title: '', phone: '', office_location: '', email: '' }, null, result.body), '<a href="https://example.test">Website</a>');
     assert.equal(renderTemplate('{{locations}}', { first_name: '', last_name: '', title: '', phone: '', office_location: 'HEADQUARTERS', email: '' }, null, result.body), 'Headquarters | Satellite Office | Branch Office | Regional Office');
+    assert.equal(renderTemplate('{{locations}}', { first_name: '', last_name: '', title: '', phone: '', office_location: '', email: '' }, null, result.body), 'Headquarters | Satellite Office | Branch Office | Regional Office');
+    assert.equal(renderTemplate('{{designations}}', { first_name: '', last_name: '', title: '', phone: '', office_location: '', email: '', designation_keys: ['cips', 'realtor'] }, null, result.body), 'REALTOR®, CIPS');
 
     await request('/api/admin/manage-settings', {
       method: 'PUT', headers: { 'content-type': 'application/json', origin: 'https://signatures.test' },
       body: JSON.stringify({
         organizationName: 'Example Organization',
         locationMappings: [],
+        designationOptions: [],
         directorySchedule: { enabled: false, intervalHours: 24 },
         directoryDefaults: { visible: true, applicable: true, canSelfOptOut: false, canChooseTagline: false, signatureIdentityMode: 'signed_in' },
       }),
     });
+  });
+
+  it('allows at most one default location mapping', async () => {
+    const result = await request('/api/admin/manage-settings', {
+      method: 'PUT', headers: { 'content-type': 'application/json', origin: 'https://signatures.test' },
+      body: JSON.stringify({
+        locationMappings: [
+          { source: 'Main', output: 'Main | Branch', isDefault: true },
+          { source: 'Branch', output: 'Branch | Main', isDefault: true },
+        ],
+      }),
+    });
+    assert.equal(result.response.status, 400);
+    assert.equal(result.body.error.code, 'invalid_request');
+    assert.match(result.body.error.message, /Only one location mapping/);
   });
 
   it('runs due scheduled Entra synchronization and applies defaults only to new accounts', async () => {
@@ -492,6 +537,7 @@ describe('Cornerstone Signatures backend', () => {
   });
 
   it('allows only explicitly permitted self-service preferences', async () => {
+    saveManageSettings(db, { designationOptions: [{ label: 'REALTOR®' }, { label: 'CIPS' }] }, 'admin@example.com');
     let result = await request('/api/picker/preferences', {
       method: 'PATCH', headers: { 'content-type': 'application/json', origin: 'https://signatures.test' },
       body: JSON.stringify({ selfOptedOut: true }),
@@ -502,12 +548,13 @@ describe('Cornerstone Signatures backend', () => {
     db.prepare(`UPDATE staff SET can_self_opt_out=1,can_choose_tagline=1 WHERE email='admin@example.com'`).run();
     result = await request('/api/picker/preferences', {
       method: 'PATCH', headers: { 'content-type': 'application/json', origin: 'https://signatures.test' },
-      body: JSON.stringify({ selfOptedOut: true, taglineKey: 'in-your-corner' }),
+      body: JSON.stringify({ selfOptedOut: true, taglineKey: 'in-your-corner', designationKeys: ['realtor', 'cips'] }),
     });
     assert.equal(result.response.status, 200);
     assert.equal(result.body.currentUser.self_opted_out, true);
     assert.equal(result.body.currentUser.signature_enabled, false);
     assert.equal(result.body.currentUser.tagline_key, 'in-your-corner');
+    assert.deepEqual(result.body.currentUser.designation_keys, ['realtor', 'cips']);
     assert.equal(db.prepare(`SELECT action FROM audit_log ORDER BY id DESC`).get().action, 'staff.preferences_updated');
 
     result = await request('/api/picker/preferences', {
@@ -516,6 +563,13 @@ describe('Cornerstone Signatures backend', () => {
     });
     assert.equal(result.response.status, 400);
     assert.equal(result.body.error.code, 'invalid_tagline');
+    result = await request('/api/picker/preferences', {
+      method: 'PATCH', headers: { 'content-type': 'application/json', origin: 'https://signatures.test' },
+      body: JSON.stringify({ designationKeys: ['not-approved'] }),
+    });
+    assert.equal(result.response.status, 400);
+    assert.equal(result.body.error.code, 'invalid_designation');
+    saveManageSettings(db, { designationOptions: [] }, 'admin@example.com');
     db.prepare(`UPDATE staff SET self_opted_out=0 WHERE email='admin@example.com'`).run();
   });
 
@@ -620,14 +674,17 @@ describe('Cornerstone Signatures backend', () => {
     const legacyPath = path.join(legacyDirectory, 'backup.sqlite');
     writeFileSync(legacyPath, backup);
     const legacy = new DatabaseSync(legacyPath);
-    legacy.exec('DELETE FROM schema_migrations; INSERT INTO schema_migrations(version) VALUES (13)');
+    legacy.exec(`DROP TABLE signature_analytics;
+      ALTER TABLE staff DROP COLUMN designation_keys_json;
+      DELETE FROM schema_migrations;
+      INSERT INTO schema_migrations(version) VALUES (13)`);
     legacy.close();
     response = await fetch(`${baseUrl}/api/admin/database/import`, {
       method: 'POST', headers: { 'content-type': 'application/vnd.sqlite3', origin: 'https://signatures.test' }, body: readFileSync(legacyPath),
     });
     rmSync(legacyDirectory, { recursive: true, force: true });
     assert.equal(response.status, 200);
-    assert.equal(db.prepare(`SELECT MAX(version) AS version FROM schema_migrations`).get().version, 200);
+    assert.equal(db.prepare(`SELECT MAX(version) AS version FROM schema_migrations`).get().version, 210);
     assert.equal(db.prepare(`SELECT tagline_key FROM staff WHERE email='admin@example.com'`).get().tagline_key, 'in-your-corner');
     assert.equal(db.prepare(`SELECT signature_identity_mode FROM staff WHERE email='admin@example.com'`).get().signature_identity_mode, 'signed_in');
 
@@ -720,7 +777,7 @@ describe('Cornerstone Signatures backend', () => {
     db.prepare(`INSERT INTO deployments(template_id,template_revision,html_snapshot,status,published_by) VALUES (?,1,'Hello {{displayName}}','published','test')`).run(template.id);
     db.prepare(`UPDATE staff SET applicable=1 WHERE email='person@example.com'`).run();
     const signedBefore = (await request('/api/admin/dashboard')).body.signaturesSigned;
-    let result = await request('/api/outlook/signature', { headers: { authorization: 'Bearer injected-test-token' } });
+    let result = await request('/api/outlook/signature', { headers: { authorization: 'Bearer injected-test-token', 'user-agent': 'Microsoft Office/16.0 (Windows NT 10.0; Microsoft Outlook 16.0.20326; Pro)' } });
     assert.equal(result.response.status, 200);
     assert.equal(result.body.html, 'Hello Pat &lt;Person&gt;');
     assert.equal(result.body.templateName, 'Default signature');
@@ -730,6 +787,8 @@ describe('Cornerstone Signatures backend', () => {
     const dashboardResult = await request('/api/admin/dashboard');
     assert.equal(dashboardResult.response.status, 200);
     assert.equal(dashboardResult.body.signaturesSigned, signedBefore + 1);
+    assert.ok(dashboardResult.body.analytics.clients.some((item) => item.family === 'Classic Outlook for Windows' && item.version === '16.0.20326'));
+    assert.ok(dashboardResult.body.analytics.usage.some((item) => item.type === 'primary'));
     assert.match(dashboardResult.response.headers.get('cache-control'), /no-store/);
 
     db.prepare(`UPDATE staff SET can_self_opt_out=1,can_choose_tagline=1 WHERE email='person@example.com'`).run();
@@ -774,6 +833,7 @@ describe('Cornerstone Signatures backend', () => {
     assert.deepEqual(result.body.user, { displayName: 'Pat <Person>', email: 'person@example.com' });
     assert.deepEqual(result.body.sender, { displayName: 'Example Support', email: 'support@example.com' });
     assert.equal(result.body.signatureIdentityMode, 'signed_in');
+    assert.ok((await request('/api/admin/dashboard')).body.analytics.usage.some((item) => item.type === 'alternate_from'));
 
     const supportId = db.prepare(`SELECT id FROM staff WHERE email='support@example.com'`).get().id;
     result = await request(`/api/admin/users/${supportId}`, {

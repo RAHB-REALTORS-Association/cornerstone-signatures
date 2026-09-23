@@ -12,7 +12,7 @@ Draft changes never affect users until published. A publication stores an immuta
 - **Audiences:** create reusable groups for limited deployments. Audiences with no active deployment may be deleted while historical audit references remain.
 - **Deployments:** inspect, reprioritize, schedule, cancel, or unpublish deployments. Unpublishing the default leaves unmatched users without an automated signature.
 - **Audit log:** search activity and export it for review.
-- **Manage:** set organization name and URLs, map Entra office locations to exact output strings, configure sync filters/schedules/defaults, and export or import the database.
+- **Manage:** set organization name and URLs, map Entra office locations to exact output strings (including one optional fallback for blank values), maintain approved professional designations, configure sync filters/schedules/defaults, and export or import the database.
 
 Entra synchronization refreshes directory fields and photos while preserving local overrides, roles, visibility, applicability, preferences, and audience membership. Deleting an eligible person is temporary; a later sync recreates them. Blocking prevents that.
 
@@ -31,7 +31,7 @@ Built-in merge tags include:
 
 ```text
 {{displayName}} {{firstName}} {{lastName}} {{title}}
-{{phone}} {{email}} {{officeLocation}} {{locations}} {{tagline}}
+{{phone}} {{email}} {{officeLocation}} {{locations}} {{tagline}} {{designations}}
 {{organizationName}} {{websiteUrl}} {{facebookUrl}} {{instagramUrl}}
 {{linkedinUrl}} {{xUrl}} {{threadsUrl}} {{blueskyUrl}} {{youtubeUrl}}
 ```
@@ -42,6 +42,8 @@ Custom tags are plain text, cannot replace built-ins, and update dynamically wit
 
 In supported Outlook clients, opening a new compose automatically inserts the assigned signature. Changing From reevaluates it. The task-pane button previews the assignment and **Refresh signature** reapplies it to the current draft.
 
-The root page is for preview and manual copying when an email client is unsupported. When IT enables the individual permissions, a user can also pause automatic delivery and/or choose an approved tagline there.
+The root page is for preview and manual copying when an email client is unsupported. When IT enables the individual permissions, a user can also pause automatic delivery and/or choose an approved tagline there. Staff may select any administrator-approved professional designations; templates render those selections through `{{designations}}`.
+
+The dashboard records aggregate successful-delivery analytics for the last 30 days. It groups Outlook platform/client versions and distinguishes the signed-in user's primary address from an alternate From address. Microsoft does not reliably identify whether an alternate From address is specifically a shared mailbox, delegated user, or another send-as target, so those cases are intentionally grouped together.
 
 If a signature does not appear, confirm the From address is a managed applicable record with a matching published deployment, remove any old Outlook automatic signature, restart the client, and inspect server Outlook diagnostics. Classic Outlook can remain in the Windows notification area after its window closes.

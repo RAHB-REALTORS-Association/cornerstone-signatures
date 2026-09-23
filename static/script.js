@@ -7,6 +7,8 @@
   const optOut = byId('selfOptOut');
   const taglineRow = byId('selfTaglineRow');
   const tagline = byId('selfTagline');
+  const designationsRow = byId('selfDesignationsRow');
+  const designations = byId('selfDesignations');
   const status = byId('selfServiceStatus');
   let directory;
 
@@ -33,12 +35,23 @@
 
   function renderPreferences(user) {
     const mine = user && directory.currentUser && user.email.toLowerCase() === directory.currentUser.email.toLowerCase();
-    selfService.hidden = !mine || (!user.can_self_opt_out && !user.can_choose_tagline);
+    const hasDesignations = Boolean(directory.designationOptions?.length);
+    selfService.hidden = !mine || (!user.can_self_opt_out && !user.can_choose_tagline && !hasDesignations);
     optOutRow.hidden = !user?.can_self_opt_out;
     taglineRow.hidden = !user?.can_choose_tagline;
+    designationsRow.hidden = !hasDesignations;
     if (!mine) return;
     optOut.checked = Boolean(user.self_opted_out);
     tagline.replaceChildren(...directory.taglineOptions.map((item) => new Option(item.label, item.key, false, item.key === user.tagline_key)));
+    const selected = new Set(user.designation_keys || []);
+    designations.replaceChildren(...(directory.designationOptions || []).map((item) => {
+      const input = document.createElement('input');
+      input.type = 'checkbox'; input.value = item.key; input.checked = selected.has(item.key);
+      const label = document.createElement('label');
+      const span = document.createElement('span'); span.textContent = item.label;
+      label.append(input, span);
+      return label;
+    }));
   }
 
   async function loadDirectory() {
@@ -61,9 +74,12 @@
   });
   byId('saveSelfService').addEventListener('click', async () => {
     status.textContent = 'Saving…';
+    const payload = { designationKeys: [...designations.querySelectorAll('input:checked')].map((input) => input.value) };
+    if (!optOutRow.hidden) payload.selfOptedOut = optOut.checked;
+    if (!taglineRow.hidden) payload.taglineKey = tagline.value;
     const response = await fetch('/api/picker/preferences', {
       method: 'PATCH', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ selfOptedOut: optOut.checked, taglineKey: tagline.value }),
+      body: JSON.stringify(payload),
     });
     const body = await response.json();
     if (!response.ok) { status.textContent = body.message || 'Could not save preferences.'; return; }

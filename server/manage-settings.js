@@ -14,6 +14,7 @@ export const DEFAULT_MANAGE_SETTINGS = Object.freeze({
     youtubeUrl: '',
   }),
   locationMappings: Object.freeze([]),
+  designationOptions: Object.freeze([]),
   directorySchedule: Object.freeze({ enabled: false, intervalHours: 24, lastRunAt: null, lastResult: null }),
   directoryDefaults: Object.freeze({ visible: true, applicable: true, canSelfOptOut: false, canChooseTagline: false, signatureIdentityMode: 'signed_in' }),
 });
@@ -44,18 +45,53 @@ function validateLocationMappings(value, fallback) {
     throw new HttpError(400, 'invalid_request', 'locationMappings must be an array containing no more than 100 mappings.');
   }
   const seen = new Set();
-  return value.map((mapping, index) => {
+  let defaultCount = 0;
+  const mappings = value.map((mapping, index) => {
     if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)) {
       throw new HttpError(400, 'invalid_request', `locationMappings[${index}] must be an object.`);
     }
     const source = typeof mapping.source === 'string' ? mapping.source.trim() : '';
     const output = typeof mapping.output === 'string' ? mapping.output.trim() : '';
+    const isDefault = bool(mapping.isDefault, false, `locationMappings[${index}].isDefault`);
     if (!source || source.length > 200) throw new HttpError(400, 'invalid_request', `locationMappings[${index}].source must be between 1 and 200 characters.`);
     if (!output || output.length > 500) throw new HttpError(400, 'invalid_request', `locationMappings[${index}].output must be between 1 and 500 characters.`);
     const key = source.toLocaleLowerCase('en-CA');
     if (seen.has(key)) throw new HttpError(400, 'invalid_request', 'Each Entra office location can be mapped only once.');
     seen.add(key);
-    return { source, output };
+    if (isDefault) defaultCount += 1;
+    return { source, output, isDefault };
+  });
+  if (defaultCount > 1) throw new HttpError(400, 'invalid_request', 'Only one location mapping can be the default.');
+  return mappings;
+}
+
+function designationKey(label) {
+  return label.toLocaleLowerCase('en-CA').normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64) || 'designation';
+}
+
+function validateDesignationOptions(value, fallback) {
+  if (value === undefined) return fallback;
+  if (!Array.isArray(value) || value.length > 100) {
+    throw new HttpError(400, 'invalid_request', 'designationOptions must be an array containing no more than 100 designations.');
+  }
+  const keys = new Set();
+  const labels = new Set();
+  return value.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new HttpError(400, 'invalid_request', `designationOptions[${index}] must be an object.`);
+    }
+    const label = typeof item.label === 'string' ? item.label.trim() : '';
+    if (!label || label.length > 120) throw new HttpError(400, 'invalid_request', `designationOptions[${index}].label must be between 1 and 120 characters.`);
+    const normalizedLabel = label.toLocaleLowerCase('en-CA');
+    if (labels.has(normalizedLabel)) throw new HttpError(400, 'invalid_request', 'Each professional designation label must be unique.');
+    labels.add(normalizedLabel);
+    const requestedKey = typeof item.key === 'string' && item.key.trim() ? item.key.trim() : designationKey(label);
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(requestedKey)) throw new HttpError(400, 'invalid_request', `designationOptions[${index}].key is invalid.`);
+    let key = requestedKey;
+    let suffix = 2;
+    while (keys.has(key)) key = `${requestedKey.slice(0, 60)}-${suffix++}`;
+    keys.add(key);
+    return { key, label };
   });
 }
 
@@ -83,6 +119,7 @@ export function validateManageSettings(value, current = DEFAULT_MANAGE_SETTINGS)
     organizationName: organizationName.trim(),
     organizationInfo: validateOrganizationInfo(value.organizationInfo, current.organizationInfo),
     locationMappings: validateLocationMappings(value.locationMappings, current.locationMappings),
+    designationOptions: validateDesignationOptions(value.designationOptions, current.designationOptions),
     directorySchedule: {
       enabled: bool(schedule.enabled, current.directorySchedule.enabled, 'directorySchedule.enabled'),
       intervalHours,
@@ -119,7 +156,7 @@ export function getManageSettings(db) {
 }
 
 function write(db, settings, actor) {
-  const stored = { organizationName: settings.organizationName, organizationInfo: settings.organizationInfo, locationMappings: settings.locationMappings, directorySchedule: settings.directorySchedule, directoryDefaults: settings.directoryDefaults };
+  const stored = { organizationName: settings.organizationName, organizationInfo: settings.organizationInfo, locationMappings: settings.locationMappings, designationOptions: settings.designationOptions, directorySchedule: settings.directorySchedule, directoryDefaults: settings.directoryDefaults };
   db.prepare(`INSERT INTO app_settings(key,value_json,updated_by) VALUES ('manage_settings',?,?)
     ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`)
     .run(JSON.stringify(stored), actor);
@@ -134,6 +171,7 @@ export function saveManageSettings(db, value, actor) {
     organizationName: saved.organizationName,
     organizationInfo: saved.organizationInfo,
     locationMappings: saved.locationMappings,
+    designationOptions: saved.designationOptions,
     directorySchedule: { enabled: saved.directorySchedule.enabled, intervalHours: saved.directorySchedule.intervalHours },
     directoryDefaults: saved.directoryDefaults,
   });

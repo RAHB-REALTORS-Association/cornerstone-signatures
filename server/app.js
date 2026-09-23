@@ -4,7 +4,7 @@ import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { createAccessAuthenticator, createAdminAuthenticator, requireAnyRole, requireRole } from './auth.js';
 import { HttpError } from './errors.js';
-import { audit, cancelScheduledDeployment, deleteAudience, deleteStaffBulk, deleteTemplate, getDeploymentForStaff, getSignatureDeliveryCount, getStaffByEmail, listAudiences, listDeployments, listScheduledDeployments, listStaff, publishTemplate, recordSignatureDelivery, replaceRoles, saveAudience, scheduleTemplate, unpublishDeployment, updateDeploymentPriority, updateSelfPreferences, updateStaffFlags, updateStaffFlagsBulk, updateStaffProfilesBulk } from './db.js';
+import { audit, cancelScheduledDeployment, deleteAudience, deleteStaffBulk, deleteTemplate, getDeploymentForStaff, getSignatureAnalytics, getSignatureDeliveryCount, getStaffByEmail, listAudiences, listDeployments, listScheduledDeployments, listStaff, publishTemplate, recordSignatureDelivery, replaceRoles, saveAudience, scheduleTemplate, unpublishDeployment, updateDeploymentPriority, updateSelfPreferences, updateStaffFlags, updateStaffFlagsBulk, updateStaffProfilesBulk } from './db.js';
 import { renderTemplate } from './template.js';
 import { blockDirectoryStaff, getDirectorySettings, saveDirectorySettings, syncDirectoryUsers } from './entra.js';
 import { compileMjml } from './mjml.js';
@@ -13,6 +13,7 @@ import { booleanField, integerId, requireObject, rolesField, safeTemplateHtml, s
 import { deleteTagline, isTaglineKey, listTaglines, saveTagline, taglineForUser } from './taglines.js';
 import { getManageSettings, saveManageSettings } from './manage-settings.js';
 import { BUILT_IN_MERGE_TAGS, customMergeTagValues, deleteCustomMergeTag, listCustomMergeTags, saveCustomMergeTag } from './merge-tags.js';
+import { classifyOutlookClient } from './outlook-analytics.js';
 
 function nullableOverride(body, field, max) {
   if (!Object.hasOwn(body, field)) return undefined;
@@ -55,6 +56,21 @@ function signatureIdentityMode(body) {
     throw new HttpError(400, 'invalid_request', 'signatureIdentityMode must be signed_in or mailbox.');
   }
   return value;
+}
+
+function designationKeysField(body, allowedOptions) {
+  if (!Object.hasOwn(body, 'designationKeys')) return undefined;
+  if (!Array.isArray(body.designationKeys) || body.designationKeys.length > 20) {
+    throw new HttpError(400, 'invalid_request', 'designationKeys must be an array containing no more than 20 values.');
+  }
+  const keys = body.designationKeys.map((key) => {
+    if (typeof key !== 'string' || key.length > 64) throw new HttpError(400, 'invalid_request', 'Each professional designation must be a valid key.');
+    return key;
+  });
+  if (new Set(keys).size !== keys.length) throw new HttpError(400, 'invalid_request', 'Professional designations cannot contain duplicates.');
+  const allowed = new Set(allowedOptions.map((item) => item.key));
+  if (keys.some((key) => !allowed.has(key))) throw new HttpError(400, 'invalid_designation', 'Choose only professional designations approved by your administrator.');
+  return keys;
 }
 
 export function createApp({ db, auth = {}, microsoftUserResolver, directoryProvider = null, protectedStaffEmails = [], publicRoot = path.resolve('.'), officeAddinRuntimeUrls = [], outlookConfig = {}, requestLimits = {}, trustProxy = false, logger = console }) {
@@ -137,7 +153,7 @@ export function createApp({ db, auth = {}, microsoftUserResolver, directoryProvi
     const currentUser = users.find((user) => user.email.toLowerCase() === req.identity.email) || null;
     const canAccessAdmin = Boolean(authenticatedUser?.roles?.some((role) => ['it_admin', 'communications_editor'].includes(role)));
     res.set('Cache-Control', 'private, no-store');
-    res.json({ identity: req.identity, currentUser, canAccessAdmin, taglineOptions: listTaglines(db), branding: publicBranding(), users });
+    res.json({ identity: req.identity, currentUser, canAccessAdmin, taglineOptions: listTaglines(db), designationOptions: getManageSettings(db).designationOptions, branding: publicBranding(), users });
   });
   app.patch('/api/picker/preferences', createAccessAuthenticator(auth), (req, res) => {
     const origin = req.get('origin');
@@ -145,7 +161,9 @@ export function createApp({ db, auth = {}, microsoftUserResolver, directoryProvi
     const body = requireObject(req.body);
     const changes = { selfOptedOut: booleanField(body, 'selfOptedOut') };
     changes.taglineKey = stringField(body, 'taglineKey', { max: 64 });
-    if (changes.selfOptedOut === undefined && changes.taglineKey === undefined) {
+    const settings = getManageSettings(db);
+    changes.designationKeys = designationKeysField(body, settings.designationOptions);
+    if (changes.selfOptedOut === undefined && changes.taglineKey === undefined && changes.designationKeys === undefined) {
       throw new HttpError(400, 'invalid_request', 'At least one preference is required.');
     }
     if (changes.taglineKey !== undefined && !isTaglineKey(db, changes.taglineKey)) {
@@ -205,7 +223,7 @@ export function createApp({ db, auth = {}, microsoftUserResolver, directoryProvi
         const user = getStaffByEmail(db, identity.email);
         res.set('Cache-Control', 'private, no-store');
         return res.json({
-          available: Boolean(user && (user.can_self_opt_out || user.can_choose_tagline)),
+          available: Boolean(user && (user.can_self_opt_out || user.can_choose_tagline || getManageSettings(db).designationOptions.length)),
           canSelfOptOut: Boolean(user?.can_self_opt_out),
           canChooseTagline: Boolean(user?.can_choose_tagline),
           url: '/',
@@ -254,7 +272,7 @@ export function createApp({ db, auth = {}, microsoftUserResolver, directoryProvi
         revision: deployment.template_revision,
       });
       try {
-        recordSignatureDelivery(db);
+        recordSignatureDelivery(db, classifyOutlookClient(req.get('user-agent'), identity.email, senderUser.email));
       } catch (error) {
         outlookLog('signature_metric_failed', { detail: String(error?.message || error).slice(0, 160) });
       }
@@ -305,7 +323,7 @@ export function createApp({ db, auth = {}, microsoftUserResolver, directoryProvi
   });
   admin.get('/dashboard', (_req, res) => {
     res.set('Cache-Control', 'private, no-store');
-    res.json({ signaturesSigned: getSignatureDeliveryCount(db) });
+    res.json({ signaturesSigned: getSignatureDeliveryCount(db), analytics: getSignatureAnalytics(db) });
   });
   admin.get('/users', (_req, res) => res.json({ users: adminStaff() }));
   admin.get('/users/:id/signature-preview', (req, res) => {

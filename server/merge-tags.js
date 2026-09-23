@@ -5,6 +5,7 @@ export const BUILT_IN_MERGE_TAGS = Object.freeze([
   ['displayName', 'Staff display name', 'Staff'], ['firstName', 'Staff first name', 'Staff'], ['lastName', 'Staff last name', 'Staff'],
   ['title', 'Job title', 'Staff'], ['phone', 'Business phone', 'Staff'], ['email', 'Email address', 'Staff'],
   ['officeLocation', 'Entra office location', 'Staff'], ['locations', 'Mapped location string', 'Staff'], ['tagline', 'Selected approved tagline', 'Staff'],
+  ['designations', 'Selected professional designations', 'Staff'],
   ['organizationName', 'Organization name', 'Organization'], ['websiteUrl', 'Website URL', 'Organization'],
   ['facebookUrl', 'Facebook URL', 'Organization'], ['instagramUrl', 'Instagram URL', 'Organization'],
   ['linkedinUrl', 'LinkedIn URL', 'Organization'], ['xUrl', 'X URL', 'Organization'], ['threadsUrl', 'Threads URL', 'Organization'],

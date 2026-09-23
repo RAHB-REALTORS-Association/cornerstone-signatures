@@ -4,7 +4,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { DEFAULT_TEMPLATE } from './seed.js';
 import { HttpError } from './errors.js';
 
-export const SCHEMA_VERSION = 200;
+export const SCHEMA_VERSION = 210;
+const PREVIOUS_SCHEMA_VERSION = 200;
 
 const schema = `
 PRAGMA foreign_keys = ON;
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS staff (
   self_opted_out INTEGER NOT NULL DEFAULT 0 CHECK (self_opted_out IN (0,1)),
   can_choose_tagline INTEGER NOT NULL DEFAULT 0 CHECK (can_choose_tagline IN (0,1)),
   tagline_key TEXT NOT NULL DEFAULT '',
+  designation_keys_json TEXT NOT NULL DEFAULT '[]',
   signature_identity_mode TEXT NOT NULL DEFAULT 'signed_in' CHECK (signature_identity_mode IN ('signed_in','mailbox')),
   photo_data_url TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -77,6 +79,12 @@ CREATE TABLE IF NOT EXISTS taglines (
   legacy_match_text TEXT, created_by TEXT NOT NULL, updated_by TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS signature_analytics (
+  day TEXT NOT NULL, client_family TEXT NOT NULL, client_version TEXT NOT NULL DEFAULT '',
+  platform TEXT NOT NULL, usage_type TEXT NOT NULL CHECK (usage_type IN ('primary','alternate_from')),
+  delivery_count INTEGER NOT NULL DEFAULT 0, last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (day,client_family,client_version,platform,usage_type)
+);
 `;
 
 function json(value) { return JSON.stringify(value ?? {}); }
@@ -87,14 +95,22 @@ export function openDatabase(databasePath, { initialItAdmins = [] } = {}) {
   db.exec('PRAGMA busy_timeout = 5000;');
   if (databasePath !== ':memory:') db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;');
   const hasMigrationTable = Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get());
+  let versions = [];
   if (hasMigrationTable) {
-    const versions = db.prepare('SELECT version FROM schema_migrations').all().map((row) => Number(row.version));
-    if (versions.length && !versions.includes(SCHEMA_VERSION)) {
+    versions = db.prepare('SELECT version FROM schema_migrations').all().map((row) => Number(row.version));
+    if (versions.length && (!versions.every((version) => version <= SCHEMA_VERSION)
+      || (!versions.includes(SCHEMA_VERSION) && !versions.includes(PREVIOUS_SCHEMA_VERSION)))) {
       db.close();
-      throw new Error('This database predates Cornerstone Signatures v2. Start with a new database, then import a schema-13 v1 export from Admin > Manage.');
+      throw new Error('This database is not compatible with Cornerstone Signatures v2.1. Import a supported v2 or schema-13 v1 export from Admin > Manage.');
     }
   }
   db.exec(schema);
+  if (versions.includes(PREVIOUS_SCHEMA_VERSION) && !versions.includes(SCHEMA_VERSION)) {
+    const staffColumns = new Set(db.prepare('PRAGMA table_info(staff)').all().map((row) => row.name));
+    if (!staffColumns.has('designation_keys_json')) {
+      db.exec("ALTER TABLE staff ADD COLUMN designation_keys_json TEXT NOT NULL DEFAULT '[]'");
+    }
+  }
   db.prepare('INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)').run(SCHEMA_VERSION);
   db.prepare(`INSERT INTO signature_templates(name,html,created_by,updated_by)
     SELECT 'Default signature', ?, 'system', 'system' WHERE NOT EXISTS (SELECT 1 FROM signature_templates)`).run(DEFAULT_TEMPLATE);
@@ -109,18 +125,38 @@ export function getStaffByEmail(db, email) {
   return hydrateStaff(db.prepare(`SELECT * FROM staff WHERE email=? COLLATE NOCASE`).get(String(email).toLowerCase()));
 }
 
-export function recordSignatureDelivery(db) {
+export function recordSignatureDelivery(db, analytics = null) {
   db.prepare(`INSERT INTO app_settings(key,value_json,updated_by)
     VALUES ('signature_delivery_count','1','outlook')
     ON CONFLICT(key) DO UPDATE SET
       value_json=CAST(CAST(app_settings.value_json AS INTEGER)+1 AS TEXT),
       updated_by='outlook',updated_at=CURRENT_TIMESTAMP`).run();
+  if (analytics) {
+    db.prepare(`INSERT INTO signature_analytics(day,client_family,client_version,platform,usage_type,delivery_count)
+      VALUES (date('now'),?,?,?,?,1)
+      ON CONFLICT(day,client_family,client_version,platform,usage_type) DO UPDATE SET
+        delivery_count=signature_analytics.delivery_count+1,last_seen_at=CURRENT_TIMESTAMP`)
+      .run(analytics.clientFamily, analytics.clientVersion, analytics.platform, analytics.usageType);
+  }
 }
 
 export function getSignatureDeliveryCount(db) {
   const setting = db.prepare(`SELECT value_json FROM app_settings WHERE key='signature_delivery_count'`).get();
   const count = Number(setting?.value_json ?? 0);
   return Number.isSafeInteger(count) && count >= 0 ? count : 0;
+}
+
+export function getSignatureAnalytics(db, days = 30) {
+  const safeDays = Number.isInteger(days) && days >= 1 && days <= 365 ? days : 30;
+  const since = `-${safeDays - 1} days`;
+  const clients = db.prepare(`SELECT client_family AS family,client_version AS version,platform,SUM(delivery_count) AS count
+    FROM signature_analytics WHERE day>=date('now',?)
+    GROUP BY client_family,client_version,platform ORDER BY count DESC,client_family,client_version`).all(since)
+    .map((row) => ({ ...row, count: Number(row.count) }));
+  const usage = db.prepare(`SELECT usage_type AS type,SUM(delivery_count) AS count
+    FROM signature_analytics WHERE day>=date('now',?) GROUP BY usage_type ORDER BY count DESC`).all(since)
+    .map((row) => ({ ...row, count: Number(row.count) }));
+  return { periodDays: safeDays, total: usage.reduce((sum, row) => sum + row.count, 0), clients, usage };
 }
 
 export function getRoles(db, email) {
@@ -214,17 +250,19 @@ export function updateSelfPreferences(db, email, changes) {
   if (!current) return null;
   const selfOptedOut = changes.selfOptedOut === undefined ? Boolean(current.self_opted_out) : changes.selfOptedOut;
   const taglineKey = changes.taglineKey === undefined ? current.tagline_key : changes.taglineKey;
+  const designationKeys = changes.designationKeys === undefined ? parseDesignationKeys(current.designation_keys_json) : changes.designationKeys;
   if (changes.selfOptedOut !== undefined && !current.can_self_opt_out) {
     throw new HttpError(403, 'self_opt_out_not_allowed', 'IT has not enabled signature opt-out for this account.');
   }
   if (changes.taglineKey !== undefined && !current.can_choose_tagline) {
     throw new HttpError(403, 'tagline_choice_not_allowed', 'IT has not enabled tagline selection for this account.');
   }
-  db.prepare('UPDATE staff SET self_opted_out=?,tagline_key=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
-    .run(Number(selfOptedOut), taglineKey, current.id);
+  db.prepare('UPDATE staff SET self_opted_out=?,tagline_key=?,designation_keys_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+    .run(Number(selfOptedOut), taglineKey, JSON.stringify(designationKeys), current.id);
   audit(db, email, 'staff.preferences_updated', 'staff', current.id, {
     ...(changes.selfOptedOut === undefined ? {} : { selfOptedOut }),
     ...(changes.taglineKey === undefined ? {} : { taglineKey }),
+    ...(changes.designationKeys === undefined ? {} : { designationKeys }),
   });
   return hydrateStaff(db.prepare('SELECT * FROM staff WHERE id=?').get(current.id));
 }
@@ -256,8 +294,9 @@ export function deleteStaffBulk(db, ids, actor, protectedEmails = []) {
 
 function hydrateStaff(person) {
   if (!person) return person;
+  const { designation_keys_json: designationKeysJson, ...publicPerson } = person;
   return {
-    ...person,
+    ...publicPerson,
     directory_title: person.entra_title || person.title,
     directory_office_location: person.entra_office_location || person.office_location,
     directory_phone: person.entra_phone || person.phone,
@@ -269,10 +308,18 @@ function hydrateStaff(person) {
     can_self_opt_out: Boolean(person.can_self_opt_out),
     self_opted_out: Boolean(person.self_opted_out),
     can_choose_tagline: Boolean(person.can_choose_tagline),
+    designation_keys: parseDesignationKeys(designationKeysJson),
     signature_identity_mode: person.signature_identity_mode || 'signed_in',
     signature_enabled: Boolean(person.applicable) && !Boolean(person.self_opted_out),
     directory_account_enabled: person.directory_account_enabled == null ? null : Boolean(person.directory_account_enabled),
   };
+}
+
+function parseDesignationKeys(value) {
+  try {
+    const parsed = JSON.parse(value || '[]');
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string') : [];
+  } catch { return []; }
 }
 
 export function replaceRoles(db, id, roles, actor) {

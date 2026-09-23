@@ -7,8 +7,8 @@ Copy `.env.example` and fill every production setting. Use a stable HTTPS `PUBLI
 Build and run the image with a persistent volume at `/app/data`:
 
 ```sh
-docker build -t cornerstone-signatures:2.0.0 .
-docker run --env-file .env -p 3000:3000 -v cornerstone-signatures-data:/app/data cornerstone-signatures:2.0.0
+docker build -t cornerstone-signatures:2.1.0 .
+docker run --env-file .env -p 3000:3000 -v cornerstone-signatures-data:/app/data cornerstone-signatures:2.1.0
 ```
 
 The health check is `GET /api/health`. Back up the database from **Manage → Data management** as well as backing up the volume.

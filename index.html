@@ -7,7 +7,7 @@
   <title>Cornerstone Signatures</title>
   <link rel="icon" type="image/png" sizes="32x32" href="/outlook-addin/assets/icon-32.png">
   <link rel="apple-touch-icon" href="/outlook-addin/assets/icon-128.png">
-  <link rel="stylesheet" href="/static/style.css?v=2.0.0">
+  <link rel="stylesheet" href="/static/style.css?v=2.1.0">
 </head>
 <body>
   <header class="header-container">
@@ -37,12 +37,13 @@
         <div><h3>My managed signature</h3><p>These preferences affect the signature added automatically in Outlook.</p></div>
         <label id="selfOptOutRow" class="preference-row" hidden><span><strong>Pause my automatic signature</strong><small>You can resume delivery at any time.</small></span><input id="selfOptOut" type="checkbox"></label>
         <label id="selfTaglineRow" class="preference-field" for="selfTagline" hidden><span><strong>My tagline</strong><small>Used when the published template contains {{tagline}}.</small></span><select id="selfTagline" class="form-input"></select></label>
+        <fieldset id="selfDesignationsRow" class="preference-field designation-picker" hidden><legend>My professional designations</legend><small>Select every approved designation that should appear in {{designations}}.</small><div id="selfDesignations"></div></fieldset>
         <div class="self-service-actions"><span id="selfServiceStatus" role="status"></span><button id="saveSelfService" type="button" class="download-button">Save preferences</button></div>
       </section>
       <div id="signaturePreview" class="signature-preview" hidden></div>
     </section>
     <footer class="footer"><p>Need help? Contact your IT administrator. <a href="/source">Source code</a> is available under AGPL-3.0.</p></footer>
   </main>
-  <script src="/static/script.js?v=2.0.0"></script>
+  <script src="/static/script.js?v=2.1.0"></script>
 </body>
 </html>
