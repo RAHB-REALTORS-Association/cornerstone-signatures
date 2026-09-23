@@ -16426,7 +16426,7 @@
       persistent: false
     }, callback);
   }
-  function getSenderEmail() {
+  function readSenderEmail() {
     return new Promise((resolve, reject) => {
       const from = Office.context.mailbox.item.from;
       if (!(from == null ? void 0 : from.getAsync)) {
@@ -16441,6 +16441,28 @@
         }
         resolve(String(((_a = result.value) == null ? void 0 : _a.emailAddress) || "").trim().toLowerCase());
       });
+    });
+  }
+  function wait(milliseconds) {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  }
+  function isMobileOutlook() {
+    return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
+  }
+  function getSenderEmail() {
+    return __async(this, arguments, function* ({ settleAfterChange = false } = {}) {
+      const initial = yield readSenderEmail();
+      if (!settleAfterChange || !isMobileOutlook()) return initial;
+      let senderEmail = initial;
+      report("sender_probe", `0:${senderEmail || "empty"}`);
+      for (const delay2 of [300, 600, 1100]) {
+        yield wait(delay2);
+        const nextSenderEmail = yield readSenderEmail();
+        report("sender_probe", `${delay2}:${nextSenderEmail || "empty"}`);
+        senderEmail = nextSenderEmail;
+        if (nextSenderEmail !== initial) break;
+      }
+      return senderEmail;
     });
   }
   function setSignature(html, event) {
@@ -16464,7 +16486,7 @@
     return __async(this, arguments, function* (event, { clearWhenUnavailable = false } = {}) {
       report("event_received", clearWhenUnavailable ? "from_changed" : "new_compose");
       try {
-        const senderEmail = yield getSenderEmail();
+        const senderEmail = yield getSenderEmail({ settleAfterChange: clearWhenUnavailable });
         report("sender_read", senderEmail || "empty");
         const managedSignature = yield getManagedSignature({ senderEmail });
         if (!managedSignature) {

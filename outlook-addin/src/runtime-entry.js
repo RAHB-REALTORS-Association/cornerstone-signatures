@@ -38,7 +38,7 @@ function notify(key, message, callback) {
     }, callback);
 }
 
-function getSenderEmail() {
+function readSenderEmail() {
     return new Promise((resolve, reject) => {
         const from = Office.context.mailbox.item.from;
         if (!from?.getAsync) {
@@ -54,6 +54,34 @@ function getSenderEmail() {
             resolve(String(result.value?.emailAddress || '').trim().toLowerCase());
         });
     });
+}
+
+function wait(milliseconds) {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function isMobileOutlook() {
+    return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+}
+
+async function getSenderEmail({ settleAfterChange = false } = {}) {
+    const initial = await readSenderEmail();
+    if (!settleAfterChange || !isMobileOutlook()) return initial;
+
+    // Outlook mobile can raise OnMessageFromChanged before its compose API has
+    // committed the new From value. Re-read for a short, bounded window and
+    // use the first changed value. If the API was already current, use the
+    // final confirmation read after two seconds.
+    let senderEmail = initial;
+    report('sender_probe', `0:${senderEmail || 'empty'}`);
+    for (const delay of [300, 600, 1100]) {
+        await wait(delay);
+        const nextSenderEmail = await readSenderEmail();
+        report('sender_probe', `${delay}:${nextSenderEmail || 'empty'}`);
+        senderEmail = nextSenderEmail;
+        if (nextSenderEmail !== initial) break;
+    }
+    return senderEmail;
 }
 
 function setSignature(html, event) {
@@ -77,7 +105,7 @@ function setSignature(html, event) {
 async function applySignatureForCurrentSender(event, { clearWhenUnavailable = false } = {}) {
     report('event_received', clearWhenUnavailable ? 'from_changed' : 'new_compose');
     try {
-        const senderEmail = await getSenderEmail();
+        const senderEmail = await getSenderEmail({ settleAfterChange: clearWhenUnavailable });
         report('sender_read', senderEmail || 'empty');
         const managedSignature = await getManagedSignature({ senderEmail });
 

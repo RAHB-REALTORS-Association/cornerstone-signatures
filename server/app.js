@@ -172,6 +172,7 @@ export function createApp({ db, auth = {}, microsoftUserResolver, directoryProvi
       'runtime_loaded',
       'event_received',
       'sender_read',
+      'sender_probe',
       'signature_set',
       'runtime_failed',
       'classic_runtime_loaded',

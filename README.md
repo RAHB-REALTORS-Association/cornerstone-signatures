@@ -129,12 +129,12 @@ The development command authenticates as the example bootstrap administrator. Yo
 Fill in `.env` from [.env.example](.env.example), then build and run the container:
 
 ```sh
-docker build -t cornerstone-signatures:2.0.1 .
+docker build -t cornerstone-signatures:2.0.2 .
 
 docker run --env-file .env \
   -p 3000:3000 \
   -v cornerstone-signatures-data:/app/data \
-  cornerstone-signatures:2.0.1
+  cornerstone-signatures:2.0.2
 ```
 
 The health endpoint is:
@@ -177,6 +177,11 @@ The canonical list and explanatory comments live in [.env.example](.env.example)
 | Microsoft Entra | `MICROSOFT_TENANT_ID`, `MICROSOFT_CLIENT_ID`, `MICROSOFT_API_AUDIENCE`, `MICROSOFT_GRAPH_CLIENT_SECRET` |
 | Outlook add-in | `OUTLOOK_ADDIN_ID`, `OUTLOOK_PROVIDER_NAME`, optional `OFFICE_ADDIN_RUNTIME_URLS` |
 | Bootstrap access | `INITIAL_IT_ADMINS` |
+
+On Outlook mobile, the add-in briefly re-reads the compose From address after
+an account change. Some mobile builds raise `OnMessageFromChanged` before the
+updated sender is available through Office.js; this bounded settling window
+prevents the previous account's signature from being reapplied.
 
 Secrets belong in the deployment platform's encrypted or masked secret store. Never commit `.env`, database exports, access tokens, or generated manifests.
 
