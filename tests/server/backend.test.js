@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -21,6 +21,8 @@ describe('Cornerstone Signatures backend', () => {
 
   before(async () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'siggen-test-'));
+    mkdirSync(path.join(directory, 'outlook-addin/dist'), { recursive: true });
+    writeFileSync(path.join(directory, 'outlook-addin/dist/classic-runtime-entry.js'), 'var SIGNATURE_URL = __SIGNATURE_URL__;\n');
     db = openDatabase(':memory:');
     const add = db.prepare(`INSERT INTO staff(email,first_name,last_name,title,phone) VALUES (?,?,?,?,?)`);
     const admin = add.run('admin@example.com', 'Ada', 'Admin', 'IT', '1').lastInsertRowid;
@@ -47,6 +49,7 @@ describe('Cornerstone Signatures backend', () => {
       protectedStaffEmails: ['admin@example.com', 'editor@example.com'],
       publicRoot: directory,
       officeAddinRuntimeUrls: ['https://configured.test/outlook/runtime.js'],
+      outlookConfig: { publicBaseUrl: 'https://signatures.test' },
     });
     server = app.listen(0, '127.0.0.1');
     await new Promise((resolve) => server.once('listening', resolve));
@@ -115,6 +118,14 @@ describe('Cornerstone Signatures backend', () => {
     assert.equal(response.status, 200);
     assert.deepEqual(body, { allowed: ['https://configured.test/outlook/runtime.js'] });
     assert.match(response.headers.get('cache-control'), /max-age=300/);
+  });
+
+  it('serves classic Outlook an absolute signature API URL', async () => {
+    const response = await fetch(`${baseUrl}/outlook-addin/dist/classic-runtime-entry.js`);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /javascript/);
+    assert.match(response.headers.get('cache-control'), /no-store/);
+    assert.equal(await response.text(), 'var SIGNATURE_URL = "https://signatures.test/api/outlook/signature";\n');
   });
 
   it('returns the managed profile for the administrator header', async () => {

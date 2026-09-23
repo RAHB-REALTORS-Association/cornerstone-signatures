@@ -110,6 +110,13 @@ export function createApp({ db, auth = {}, microsoftUserResolver, directoryProvi
     res.type('application/javascript').set('Cache-Control', 'private, no-store');
     res.send(`globalThis.CORNERSTONE_SIGNATURES_CONFIG=${JSON.stringify({ clientId: outlookConfig.clientId || '', tenantId: outlookConfig.tenantId || '' })};`);
   });
+  app.get('/outlook-addin/dist/classic-runtime-entry.js', (_req, res) => {
+    const baseUrl = String(outlookConfig.publicBaseUrl || '').replace(/\/$/, '');
+    const signatureUrl = `${baseUrl}/api/outlook/signature`;
+    const source = readFileSync(path.join(publicRoot, 'outlook-addin/dist/classic-runtime-entry.js'), 'utf8')
+      .replaceAll('__SIGNATURE_URL__', JSON.stringify(signatureUrl));
+    res.type('application/javascript').set('Cache-Control', 'private, no-store').send(source);
+  });
   app.get('/outlook-addin/manifest.xml', (_req, res) => {
     const baseUrl = String(outlookConfig.publicBaseUrl || '').replace(/\/$/, '');
     const host = baseUrl ? new URL(baseUrl).host : '';

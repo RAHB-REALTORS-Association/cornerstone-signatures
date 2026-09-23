@@ -129,12 +129,12 @@ The development command authenticates as the example bootstrap administrator. Yo
 Fill in `.env` from [.env.example](.env.example), then build and run the container:
 
 ```sh
-docker build -t cornerstone-signatures:2.0.2 .
+docker build -t cornerstone-signatures:2.0.3 .
 
 docker run --env-file .env \
   -p 3000:3000 \
   -v cornerstone-signatures-data:/app/data \
-  cornerstone-signatures:2.0.2
+  cornerstone-signatures:2.0.3
 ```
 
 The health endpoint is:

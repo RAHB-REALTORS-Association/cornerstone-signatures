@@ -6,7 +6,10 @@
 (function () {
     'use strict';
 
-    var SIGNATURE_URL = '/api/outlook/signature';
+    // Classic Outlook executes this file in a JavaScript-only runtime that
+    // doesn't consistently provide a document origin for relative fetches.
+    // The server replaces this token with an absolute, configured URL.
+    var SIGNATURE_URL = __SIGNATURE_URL__;
 
     function report(stage, detail) {
         var url = SIGNATURE_URL + '?diagnostic=' + encodeURIComponent(stage);
