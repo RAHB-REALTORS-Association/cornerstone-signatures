@@ -405,6 +405,13 @@ describe('Cornerstone Signatures backend', () => {
     assert.equal(renderTemplate('{{locations}}', { first_name: '', last_name: '', title: '', phone: '', office_location: '', email: '' }, null, result.body), 'Headquarters | Satellite Office | Branch Office | Regional Office');
     assert.equal(renderTemplate('{{designations}}', { first_name: '', last_name: '', title: '', phone: '', office_location: '', email: '', designation_keys: ['cips', 'realtor'] }, null, result.body), 'REALTOR®, CIPS');
 
+    result = await request('/api/admin/manage-settings', {
+      method: 'PUT', headers: { 'content-type': 'application/json', origin: 'https://signatures.test' },
+      body: JSON.stringify({ designationOptions: [{ key: 'cips', label: 'CIPS' }, { key: 'realtor', label: 'REALTOR®' }] }),
+    });
+    assert.deepEqual(result.body.designationOptions, [{ key: 'cips', label: 'CIPS' }, { key: 'realtor', label: 'REALTOR®' }]);
+    assert.equal(renderTemplate('{{designations}}', { first_name: '', last_name: '', title: '', phone: '', office_location: '', email: '', designation_keys: ['realtor', 'cips'] }, null, result.body), 'CIPS, REALTOR®');
+
     await request('/api/admin/manage-settings', {
       method: 'PUT', headers: { 'content-type': 'application/json', origin: 'https://signatures.test' },
       body: JSON.stringify({

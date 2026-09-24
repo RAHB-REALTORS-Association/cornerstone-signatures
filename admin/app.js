@@ -626,12 +626,40 @@ async function manage() {
   const addMapping=el('button',{class:'button small',type:'button',onclick:()=>addLocationMapping()},'Add location mapping');
   const designationOptions=el('div',{class:'mapping-list'});
   const designationRows=[];
+  let draggedDesignation=null;
+  const describeDesignation=(entry,index)=>entry.handle.setAttribute('aria-label',`Reorder ${entry.label.value.trim()||'professional designation'}, position ${index+1} of ${designationRows.length}. Use arrow keys or drag.`);
+  const renderDesignationOrder=()=>{
+    designationOptions.replaceChildren(...designationRows.map(entry=>entry.row));
+    designationRows.forEach(describeDesignation);
+  };
+  const moveDesignation=(entry,toIndex)=>{
+    const fromIndex=designationRows.indexOf(entry);
+    const boundedIndex=Math.max(0,Math.min(designationRows.length-1,toIndex));
+    if(fromIndex<0||fromIndex===boundedIndex)return;
+    designationRows.splice(fromIndex,1);designationRows.splice(boundedIndex,0,entry);
+    renderDesignationOrder();entry.handle.focus();
+  };
+  const dropDesignation=(entry,target,after)=>{
+    const fromIndex=designationRows.indexOf(entry);let targetIndex=designationRows.indexOf(target);
+    if(fromIndex<0||targetIndex<0||entry===target)return;
+    designationRows.splice(fromIndex,1);
+    if(fromIndex<targetIndex)targetIndex-=1;
+    if(after)targetIndex+=1;
+    designationRows.splice(targetIndex,0,entry);renderDesignationOrder();
+  };
   const addDesignation=(item={})=>{
     const key=item.key||'';
     const label=el('input',{value:item.label||'',maxlength:120,placeholder:'CPA, REALTOR®, P.Eng.'});
-    const entry={key,label};
-    const row=el('div',{class:'designation-row'},el('div',{class:'field'},el('label',{},'Professional designation'),label),el('button',{class:'button small subtle mapping-remove',type:'button','aria-label':'Remove professional designation',onclick:()=>{row.remove();const index=designationRows.indexOf(entry);if(index>=0)designationRows.splice(index,1);}},'×'));
-    designationRows.push(entry);designationOptions.append(row);
+    const handle=el('button',{class:'designation-drag',type:'button',draggable:'true',title:'Drag to reorder. Arrow keys also move this designation.'},'⠿');
+    const entry={key,label,handle,row:null};
+    const clearDropState=()=>entry.row.classList.remove('drop-before','drop-after');
+    const row=el('div',{class:'designation-row',ondragover:event=>{if(!draggedDesignation||draggedDesignation===entry)return;event.preventDefault();const after=event.clientY>row.getBoundingClientRect().top+row.offsetHeight/2;row.classList.toggle('drop-before',!after);row.classList.toggle('drop-after',after);if(event.dataTransfer)event.dataTransfer.dropEffect='move';},ondragleave:event=>{if(!row.contains(event.relatedTarget))clearDropState();},ondrop:event=>{event.preventDefault();const after=row.classList.contains('drop-after');clearDropState();if(draggedDesignation)dropDesignation(draggedDesignation,entry,after);}},handle,el('div',{class:'field'},el('label',{},'Professional designation'),label),el('button',{class:'button small subtle mapping-remove',type:'button','aria-label':'Remove professional designation',onclick:()=>{row.remove();const index=designationRows.indexOf(entry);if(index>=0)designationRows.splice(index,1);renderDesignationOrder();}},'×'));
+    entry.row=row;
+    handle.addEventListener('dragstart',event=>{draggedDesignation=entry;row.classList.add('dragging');if(event.dataTransfer){event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',key||label.value||'designation');}});
+    handle.addEventListener('dragend',()=>{draggedDesignation=null;designationRows.forEach(item=>item.row.classList.remove('dragging','drop-before','drop-after'));});
+    handle.addEventListener('keydown',event=>{if(!['ArrowUp','ArrowDown'].includes(event.key))return;event.preventDefault();const offset=event.key==='ArrowUp'?-1:1;moveDesignation(entry,designationRows.indexOf(entry)+offset);});
+    label.addEventListener('input',()=>describeDesignation(entry,designationRows.indexOf(entry)));
+    designationRows.push(entry);renderDesignationOrder();
   };
   (settings.designationOptions||[]).forEach(addDesignation);
   const addDesignationButton=el('button',{class:'button small',type:'button',onclick:()=>addDesignation()},'Add designation');
@@ -670,7 +698,7 @@ async function manage() {
     el('div',{class:'manage-sections'},
       el('section',{class:'card card-pad stack'},el('div',{},el('h3',{},'Organization information'),el('p',{class:'muted'},'Reusable organization values for templates. Each field is available through the merge tag shown below; Outlook’s installed add-in name remains controlled by its manifest.')),el('div',{class:'field'},el('label',{},'Organization name'),organizationName,el('small',{class:'code'},'{{organizationName}}')),el('div',{class:'form-grid'},...organizationFields.map(([key,label])=>el('div',{class:'field'},el('label',{},label),organizationInputs[key],el('small',{class:'code'},`{{${key}}}`))))),
       el('section',{class:'card card-pad stack'},el('div',{},el('h3',{},'Location mappings'),el('p',{class:'muted'},'Match an exact Entra office location to the saved text rendered by {{locations}}. Matching ignores capitalization; an unmapped location renders as received from Entra. Optionally choose one mapping as the fallback when Entra has no location.')),locationMappings,el('div',{},addMapping)),
-      el('section',{class:'card card-pad stack'},el('div',{},el('h3',{},'Professional designations'),el('p',{class:'muted'},'Maintain the approved values staff can select for {{designations}}. Selections are stored locally because Entra has no standard professional-designations field.')),designationOptions,el('div',{},addDesignationButton)),
+      el('section',{class:'card card-pad stack'},el('div',{},el('h3',{},'Professional designations'),el('p',{class:'muted'},'Maintain the approved values staff can select for {{designations}}. Drag them into the order used in the picker and rendered signatures. Selections are stored locally because Entra has no standard professional-designations field.')),designationOptions,el('div',{},addDesignationButton)),
       el('section',{class:'card card-pad stack'},el('div',{},el('h3',{},'Microsoft Entra synchronization'),el('p',{class:'muted'},settings.directoryConfigured?'Graph credentials connected. Configure filters, automate refreshes, or run one immediately.':'Graph credentials are not configured in the application environment.')),el('div',{class:'form-grid'},el('div',{class:'field'},el('label',{},'Allowed email domains'),domains,el('small',{},'Comma-separated; leave empty to allow every domain.')),el('div',{class:'field'},el('label',{},'Excluded email patterns'),excluded,el('small',{},'One wildcard pattern per line; * and ? are supported.'))),toggle('Enabled accounts only','Skip disabled Entra accounts.',enabled),toggle('Member users only','Skip guest accounts.',members),el('div',{class:'schedule-row'},toggle('Scheduled synchronization','Run automatically in this Cornerstone Signatures service.',scheduleEnabled),el('div',{class:'field'},el('label',{},'Frequency'),scheduleInterval)),el('p',{class:'muted'},syncStatus),el('div',{},syncNow)),
       el('section',{class:'card card-pad stack'},el('div',{},el('h3',{},'New account defaults & preferences'),el('p',{class:'muted'},'Applied only when a matching account is first added by Entra. Existing staff settings are never rewritten.')),toggle('Visible in staff picker','Show newly synced accounts on the root picker.',defaultVisible),toggle('Signature applicable','Enable managed delivery for newly synced accounts.',defaultApplicable),toggle('Allow self-service opt-out','Let new accounts pause automatic delivery.',defaultOptOut),toggle('Allow tagline choice','Let new accounts select an approved tagline.',defaultTagline),el('div',{class:'field'},el('label',{},'Shared sending identity default'),defaultIdentity)),
       el('section',{class:'card card-pad stack data-management'},el('div',{},el('h3',{},'Data management'),el('p',{class:'muted'},'Backups contain staff data, roles, templates, deployments, settings, and audit history. Store them securely.')),el('div',{class:'grid two database-grid'},el('div',{class:'stack'},el('h4',{},'Export database'),el('p',{class:'muted'},'Download a consistent point-in-time SQLite backup while Cornerstone Signatures remains online.'),el('div',{class:'database-action'},download)),el('div',{class:'stack'},el('h4',{},'Import database'),el('p',{class:'muted'},'Restore a fully validated Cornerstone Signatures backup and replace current managed state.'),el('label',{class:'file-picker'},file,el('span',{},'Choose backup file')),selected,el('div',{class:'database-action'},restore))))));

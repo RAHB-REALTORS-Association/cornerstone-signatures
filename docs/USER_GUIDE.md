@@ -12,7 +12,7 @@ Draft changes never affect users until published. A publication stores an immuta
 - **Audiences:** create reusable groups for limited deployments. Audiences with no active deployment may be deleted while historical audit references remain.
 - **Deployments:** inspect, reprioritize, schedule, cancel, or unpublish deployments. Unpublishing the default leaves unmatched users without an automated signature.
 - **Audit log:** search activity and export it for review.
-- **Manage:** set organization name and URLs, map Entra office locations to exact output strings (including one optional fallback for blank values), maintain approved professional designations, configure sync filters/schedules/defaults, and export or import the database.
+- **Manage:** set organization name and URLs, map Entra office locations to exact output strings (including one optional fallback for blank values), maintain and reorder approved professional designations, configure sync filters/schedules/defaults, and export or import the database.
 
 Entra synchronization refreshes directory fields and photos while preserving local overrides, roles, visibility, applicability, preferences, and audience membership. Deleting an eligible person is temporary; a later sync recreates them. Blocking prevents that.
 

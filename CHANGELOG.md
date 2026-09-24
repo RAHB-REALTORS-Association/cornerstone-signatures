@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.2
+
+- Added drag-and-drop ordering for administrator-managed professional designations. The saved order now controls both the user picker and the rendered `{{designations}}` value.
+- Added keyboard reordering with the Up and Down arrow keys on each designation drag handle.
+
 ## 2.1.1
 
 - Added Office-provided client diagnostics to distinguish Classic Outlook for Windows, desktop Outlook for Mac, new Outlook for Windows, Outlook on the web by operating system, iOS/iPadOS, and Android.
