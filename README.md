@@ -4,6 +4,8 @@ Cornerstone Signatures is a self-hosted email-signature management system for Mi
 
 It is designed for organizations that want the capabilities of a commercial signature-management platform without sending their directory and signature data to another SaaS provider.
 
+**[Explore the product website](https://rahb-realtors-association.github.io/cornerstone-signatures/)** · [Deployment guide](docs/DEPLOYMENT.md) · [Administrator and user guide](docs/USER_GUIDE.md)
+
 ## What it does
 
 - Synchronizes staff and shared mailboxes from Microsoft Entra ID
