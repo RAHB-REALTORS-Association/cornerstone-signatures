@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.3
+
+- Updated the transitive `source-map-js` development dependency (Dependabot).
+
 ## 2.1.2
 
 - Added drag-and-drop ordering for administrator-managed professional designations. The saved order now controls both the user picker and the rendered `{{designations}}` value.
