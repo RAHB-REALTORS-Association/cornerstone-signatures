@@ -1,6 +1,6 @@
 {
   "name": "cornerstone-signatures",
-  "version": "2.1.4",
+  "version": "2.1.5",
   "description": "Self-hosted Microsoft 365 email signature management",
   "license": "AGPL-3.0-only",
   "private": true,

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.5
+
+- Updated `express` to 5.3.0 (Dependabot).
+- Updated the GitHub Actions used by CI, release, container and product site workflows to their current major versions (Dependabot).
+
 ## 2.1.4
 
 - Updated `@azure/msal-browser` to 5.25.1, `express-rate-limit` to 8.7.1, `grapesjs` to 0.23.8, `jose` to 6.2.12, and the `office-addin-manifest` development dependency to 3.0.1 (Dependabot).
