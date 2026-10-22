@@ -3402,7 +3402,7 @@
 
   // node_modules/@azure/msal-common/dist-browser/packageMetadata.mjs
   var name = "@azure/msal-common";
-  var version = "16.14.0";
+  var version = "16.14.2";
 
   // node_modules/@azure/msal-common/dist-browser/error/CacheErrorCodes.mjs
   var CacheErrorCodes_exports = {};
@@ -5111,10 +5111,16 @@
       let idTokenClaims;
       if (serverTokenResponse.id_token) {
         idTokenClaims = extractTokenClaims(serverTokenResponse.id_token || "", this.cryptoObj.base64Decode, request.correlationId);
-        if (authCodePayload && authCodePayload.nonce) {
-          if (idTokenClaims.nonce !== authCodePayload.nonce) {
-            throw createClientAuthError(nonceMismatch, request.correlationId);
-          }
+      }
+      if (authCodePayload && Object.prototype.hasOwnProperty.call(authCodePayload, "nonce")) {
+        const expectedNonce = authCodePayload.nonce;
+        const tokenNonce = idTokenClaims == null ? void 0 : idTokenClaims.nonce;
+        if (tokenNonce !== void 0 && expectedNonce === void 0) {
+          this.logger.warning("0thba9", request.correlationId);
+          throw createClientAuthError(nonceMismatch, request.correlationId);
+        }
+        if (expectedNonce !== void 0 && (typeof expectedNonce !== "string" || typeof tokenNonce !== "string" || expectedNonce !== tokenNonce)) {
+          throw createClientAuthError(nonceMismatch, request.correlationId);
         }
       }
       this.homeAccountIdentifier = generateHomeAccountId(serverTokenResponse.client_info || "", authority.authorityType, this.logger, this.cryptoObj, request.correlationId, idTokenClaims);
@@ -6102,6 +6108,7 @@
         addRedirectUri(parameters, request.redirectUri);
       }
       addScopes(parameters, request.scopes, request.correlationId, true, (_b = this.config.authOptions.authority.options.OIDCOptions) == null ? void 0 : _b.defaultScopes);
+      addResource(parameters, request.resource);
       addGrantType(parameters, GrantType.REFRESH_TOKEN_GRANT);
       addClientInfo(parameters);
       addLibraryInfo(parameters, this.config.libraryInfo);
@@ -6601,6 +6608,20 @@
   var HandleRedirectPromiseMeasurement = "handleRedirectPromise";
   var HandleNativeRedirectPromiseMeasurement = "handleNativeRedirectPromise";
   var NativeMessageHandlerHandshake = "nativeMessageHandlerHandshake";
+  var NativeGenerateAuthResult = "nativeGenerateAuthResult";
+  var PlatformAuthProviderDiscovery = "platformAuthProviderDiscovery";
+  var PlatformAuthDOMCreateProvider = "platformAuthDOMCreateProvider";
+  var PlatformAuthDOMGetSupportedContracts = "platformAuthDOMGetSupportedContracts";
+  var PlatformAuthDOMInitializeRequest = "platformAuthDOMInitializeRequest";
+  var PlatformAuthDOMGetToken = "platformAuthDOMGetToken";
+  var PlatformAuthDOMValidateResponse = "platformAuthDOMValidateResponse";
+  var PlatformAuthExtensionCreateProvider = "platformAuthExtensionCreateProvider";
+  var PlatformAuthExtensionGetToken = "platformAuthExtensionGetToken";
+  var PlatformAuthExtensionValidateResponse = "platformAuthExtensionValidateResponse";
+  var PlatformAuthInteractionClientInitializeRequest = "platformAuthInteractionClientInitializeRequest";
+  var PlatformAuthHandleNativeResponse = "platformAuthHandleNativeResponse";
+  var PlatformAuthCacheAccount = "platformAuthCacheAccount";
+  var PlatformAuthCacheNativeTokens = "platformAuthCacheNativeTokens";
   var RemoveHiddenIframe = "removeHiddenIframe";
   var ImportExistingCache = "importExistingCache";
   var GeneratePkceCodes = "generatePkceCodes";
@@ -8140,7 +8161,9 @@
       }
       await invokeAsync(this.importExistingCache.bind(this), ImportExistingCache, this.logger, this.performanceClient, correlationId)(correlationId);
       this.broadcast.addEventListener("message", (event) => {
-        this.updateCache(event, correlationId);
+        this.updateCache(event, correlationId).catch(() => {
+          this.logger.error("0ufnan", correlationId);
+        });
       });
       this.initialized = true;
     }
@@ -8198,19 +8221,20 @@
       this.broadcast.postMessage({
         key,
         value,
-        context: this.getContext(key)
+        context: this.getBroadcastContext(key)
       });
     }
     removeItem(key) {
-      if (this.memoryStorage.containsKey(key)) {
-        this.memoryStorage.removeItem(key);
+      const itemExists = this.containsKey(key) || this.memoryStorage.containsKey(key);
+      window.localStorage.removeItem(key);
+      this.memoryStorage.removeItem(key);
+      if (itemExists) {
         this.broadcast.postMessage({
           key,
           value: null,
-          context: this.getContext(key)
+          context: this.getBroadcastContext(key)
         });
       }
-      window.localStorage.removeItem(key);
     }
     getKeys() {
       return Object.keys(window.localStorage);
@@ -8312,41 +8336,94 @@
       await Promise.all(promiseArr);
       return importedArr;
     }
-    /**
-     * Gets encryption context for a given cache entry. This is clientId for app specific entries, empty string for shared entries
-     * @param key
-     * @returns
-     */
     getContext(key) {
-      let context = "";
-      if (key.includes(this.clientId)) {
-        context = this.clientId;
-      }
-      return context;
+      return key.includes(this.clientId) ? this.clientId : "";
     }
-    updateCache(event, correlationId) {
+    getBroadcastContext(key) {
+      const normalizedKey = key.toLowerCase();
+      const keySegments = normalizedKey.split(CACHE_KEY_SEPARATOR2);
+      if (keySegments.length > 1) {
+        return keySegments[4] === this.clientId.toLowerCase() ? this.clientId : "";
+      }
+      const credentialType = this.getCredentialType(normalizedKey);
+      if (credentialType) {
+        const ownerPrefix = `-${credentialType}-${this.clientId.toLowerCase()}-`;
+        return normalizedKey.includes(ownerPrefix) ? this.clientId : "";
+      }
+      return normalizedKey.includes(this.clientId.toLowerCase()) ? this.clientId : "";
+    }
+    getCredentialType(key) {
+      const normalizedKey = key.toLowerCase();
+      const keySegments = normalizedKey.split(CACHE_KEY_SEPARATOR2);
+      const structuredCredentialType = keySegments[3];
+      return Object.values(Constants_exports.CredentialType).map((type) => type.toLowerCase()).find((type) => structuredCredentialType === type || normalizedKey.includes(`-${type}-`));
+    }
+    isFamilyRefreshToken(key, credentialType) {
+      if (credentialType !== Constants_exports.CredentialType.REFRESH_TOKEN.toLowerCase()) {
+        return false;
+      }
+      const normalizedKey = key.toLowerCase();
+      const keySegments = normalizedKey.split(CACHE_KEY_SEPARATOR2);
+      return keySegments.length > 1 ? keySegments[4] === Constants_exports.THE_FAMILY_ID : normalizedKey.includes(`-${credentialType}-${Constants_exports.THE_FAMILY_ID}-`);
+    }
+    isContextValid(key, context) {
+      const credentialType = this.getCredentialType(key);
+      const isFamilyRefreshToken = credentialType && this.isFamilyRefreshToken(key, credentialType);
+      const isClientBoundCredential = !!credentialType && !isFamilyRefreshToken;
+      return (!isClientBoundCredential || !!context) && context === this.getBroadcastContext(key);
+    }
+    async updateCache(event, correlationId) {
+      var _a, _b;
       this.logger.trace("17cxcm", correlationId);
       const perfMeasurement = this.performanceClient.startMeasurement(LocalStorageUpdated);
       perfMeasurement.add({ isBackground: true });
-      const { key, value, context } = event.data;
-      if (!key) {
+      const key = (_a = event.data) == null ? void 0 : _a.key;
+      const context = (_b = event.data) == null ? void 0 : _b.context;
+      if (typeof key !== "string" || !key) {
         this.logger.error("0e10qr", correlationId);
         perfMeasurement.end({ success: false, errorCode: "noKey" });
         return;
       }
-      if (context && context !== this.clientId) {
+      if (typeof context !== "string") {
+        this.logger.error("16gtk4", correlationId);
+        perfMeasurement.end({
+          success: false,
+          errorCode: "noContext"
+        });
+        return;
+      }
+      if (!this.isContextValid(key, context)) {
         this.logger.trace(`04rtdy ${context}`, correlationId);
         perfMeasurement.discard();
         return;
       }
-      if (!value) {
+      const persistedValue = this.getItem(key);
+      try {
+        const value = await this.getItemFromEncryptedCache(key, correlationId);
+        if (this.getItem(key) !== persistedValue) {
+          perfMeasurement.discard();
+          return;
+        }
+        if (!value) {
+          this.memoryStorage.removeItem(key);
+          this.logger.verbose("04ypih", correlationId);
+        } else {
+          this.memoryStorage.setItem(key, value);
+          this.logger.verbose("1vzsgt", correlationId);
+        }
+        perfMeasurement.end({ success: true });
+      } catch {
+        if (this.getItem(key) !== persistedValue) {
+          perfMeasurement.discard();
+          return;
+        }
         this.memoryStorage.removeItem(key);
-        this.logger.verbose("04ypih", correlationId);
-      } else {
-        this.memoryStorage.setItem(key, value);
-        this.logger.verbose("1vzsgt", correlationId);
+        this.logger.error("0flmza", correlationId);
+        perfMeasurement.end({
+          success: false,
+          errorCode: "cacheUpdateFailed"
+        });
       }
-      perfMeasurement.end({ success: true });
     }
   };
 
@@ -8411,7 +8488,7 @@
 
   // node_modules/@azure/msal-browser/dist/packageMetadata.mjs
   var name2 = "@azure/msal-browser";
-  var version2 = "5.21.0";
+  var version2 = "5.25.1";
 
   // node_modules/@azure/msal-browser/dist/utils/Helpers.mjs
   function removeElementFromArray(array, element) {
@@ -10368,6 +10445,36 @@
     }
   };
 
+  // node_modules/@azure/msal-browser/dist/broker/nativeBroker/PlatformAuthRequest.mjs
+  var PlatformAuthTokenType = {
+    DPOP_WITH_PROOF: "dpop+proof"
+  };
+  var PROOF_OF_POSSESSION_TOKEN_TYPES = [
+    Constants_exports.AuthenticationScheme.POP,
+    Constants_exports.AuthenticationScheme.DPOP,
+    PlatformAuthTokenType.DPOP_WITH_PROOF
+  ];
+  function isProofOfPossessionTokenType(tokenType) {
+    return tokenType !== void 0 && PROOF_OF_POSSESSION_TOKEN_TYPES.includes(tokenType);
+  }
+  function createPlatformAuthExtraParametersNoCache(extraParametersNoCache, isProofOfPossessionRequest, resourceRequestMethod, resourceRequestUri, dpopNonce) {
+    if (!isProofOfPossessionRequest) {
+      return extraParametersNoCache;
+    }
+    return {
+      ...extraParametersNoCache,
+      ...resourceRequestMethod && {
+        pop_method: resourceRequestMethod
+      },
+      ...resourceRequestUri && {
+        pop_url: resourceRequestUri
+      },
+      ...dpopNonce && {
+        pop_nonce: dpopNonce
+      }
+    };
+  }
+
   // node_modules/@azure/msal-browser/dist/error/NativeAuthErrorCodes.mjs
   var contentError = "ContentError";
   var pageException = "PageException";
@@ -10515,7 +10622,7 @@
       const serverTelemetryManager = initializeServerTelemetryManager(this.apiId, this.config.auth.clientId, this.correlationId, this.browserStorage, this.logger, void 0, this.config.system.serverTelemetryEnabled);
       let nativeRequest;
       try {
-        nativeRequest = await this.initializePlatformRequest(request);
+        nativeRequest = await invokeAsync(this.initializePlatformRequest.bind(this), PlatformAuthInteractionClientInitializeRequest, this.logger, this.performanceClient, this.correlationId)(request);
       } catch (e) {
         nativeATMeasurement.add({
           isNativeBroker: false
@@ -10550,7 +10657,7 @@
       }
       try {
         const validatedResponse = await this.platformAuthProvider.sendMessage(nativeRequest);
-        const result = await this.handleNativeResponse(validatedResponse, nativeRequest, reqTimestamp, request.storeInCache);
+        const result = await invokeAsync(this.handleNativeResponse.bind(this), PlatformAuthHandleNativeResponse, this.logger, this.performanceClient, this.correlationId)(validatedResponse, nativeRequest, reqTimestamp, request.storeInCache);
         nativeATMeasurement.end({
           success: true,
           requestId: result.requestId
@@ -10593,12 +10700,14 @@
      * @returns CommonSilentFlowRequest
      */
     createSilentCacheRequest(request, cachedAccount) {
+      var _a;
       const silentRequest = {
         authority: request.authority,
         correlationId: this.correlationId,
         scopes: ScopeSet.fromString(request.scope, this.correlationId).asArray(),
         account: cachedAccount,
-        forceRefresh: false
+        forceRefresh: false,
+        resource: (_a = request.extraParameters) == null ? void 0 : _a.resource
       };
       if (request.attributeTokens) {
         silentRequest.attributeTokens = request.attributeTokens.split(" ");
@@ -10653,7 +10762,7 @@
     async acquireTokenRedirect(request, rootMeasurement, options) {
       var _a;
       this.logger.trace("0luikq", this.correlationId);
-      const nativeRequest = await this.initializePlatformRequest(request);
+      const nativeRequest = await invokeAsync(this.initializePlatformRequest.bind(this), PlatformAuthInteractionClientInitializeRequest, this.logger, this.performanceClient, this.correlationId)(request);
       const navigateToLoginRequestUrl = (_a = options == null ? void 0 : options.navigateToLoginRequestUrl) != null ? _a : true;
       try {
         await this.platformAuthProvider.sendMessage(nativeRequest);
@@ -10695,7 +10804,9 @@
       const cachedRequest = this.browserStorage.getCachedNativeRequest();
       if (!cachedRequest) {
         this.logger.verbose("0a6zjb", this.correlationId);
-        (_a = this.performanceClient) == null ? void 0 : _a.addFields({ errorCode: "no_cached_request" }, this.correlationId);
+        (_a = this.performanceClient) == null ? void 0 : _a.addFields({
+          errorCode: "no_cached_request"
+        }, this.correlationId);
         return null;
       }
       const { prompt, storeInCache, ...request } = cachedRequest;
@@ -10707,7 +10818,7 @@
       try {
         this.logger.verbose("003x5a", this.correlationId);
         const response = await this.platformAuthProvider.sendMessage(request);
-        const authResult = await this.handleNativeResponse(response, request, reqTimestamp, storeInCache);
+        const authResult = await invokeAsync(this.handleNativeResponse.bind(this), PlatformAuthHandleNativeResponse, this.logger, this.performanceClient, this.correlationId)(response, request, reqTimestamp, storeInCache);
         const serverTelemetryManager = initializeServerTelemetryManager(this.apiId, this.config.auth.clientId, this.correlationId, this.browserStorage, this.logger, void 0, this.config.system.serverTelemetryEnabled);
         serverTelemetryManager.clearNativeBrokerErrorCode();
         return authResult;
@@ -10762,9 +10873,9 @@
         this.performanceClient
       );
       response.expires_in = Number(response.expires_in);
-      const result = await this.generateAuthenticationResult(response, request, idTokenClaims, baseAccount, authority.canonicalAuthority, reqTimestamp);
-      await this.cacheAccount(baseAccount, AuthToken_exports.isKmsi(idTokenClaims));
-      await this.cacheNativeTokens(
+      const result = await invokeAsync(this.generateAuthenticationResult.bind(this), NativeGenerateAuthResult, this.logger, this.performanceClient, this.correlationId)(response, request, idTokenClaims, baseAccount, authority.canonicalAuthority, reqTimestamp);
+      await invokeAsync(this.cacheAccount.bind(this), PlatformAuthCacheAccount, this.logger, this.performanceClient, this.correlationId)(baseAccount, AuthToken_exports.isKmsi(idTokenClaims));
+      await invokeAsync(this.cacheNativeTokens.bind(this), PlatformAuthCacheNativeTokens, this.logger, this.performanceClient, this.correlationId)(
         response,
         request,
         homeAccountIdentifier,
@@ -10898,6 +11009,7 @@
      * @param reqTimestamp
      */
     async cacheNativeTokens(response, request, homeAccountIdentifier, idTokenClaims, tenantId, reqTimestamp, environment, storeInCache) {
+      var _a;
       const cachedIdToken = CacheHelpers_exports.createIdTokenEntity(homeAccountIdentifier, environment, response.id_token || "", request.clientId, idTokenClaims.tid || "");
       const expiresIn = request.tokenType === Constants_exports.AuthenticationScheme.POP ? Constants_exports.SHR_NONCE_VALIDITY : (typeof response.expires_in === "string" ? parseInt(response.expires_in, 10) : response.expires_in) || 0;
       const tokenExpirationSeconds = reqTimestamp + expiresIn;
@@ -10906,6 +11018,9 @@
         attribute_tokens: request.attributeTokens
       } : void 0;
       const cachedAccessToken = CacheHelpers_exports.createAccessTokenEntity(homeAccountIdentifier, environment, response.access_token, request.clientId, idTokenClaims.tid || tenantId, responseScopes.printScopes(), tokenExpirationSeconds, 0, base64Decode, request.correlationId, void 0, request.tokenType, void 0, request.keyId, additionalCacheKeyComponents);
+      if ((_a = request.extraParameters) == null ? void 0 : _a.resource) {
+        cachedAccessToken.resource = request.extraParameters.resource;
+      }
       if (!!cachedIdToken && (storeInCache == null ? void 0 : storeInCache.idToken) !== false) {
         await this.browserStorage.setIdTokenCredential(cachedIdToken, this.correlationId, AuthToken_exports.isKmsi(idTokenClaims));
       }
@@ -10977,9 +11092,8 @@
       this.logger.trace("1xdm2a", this.correlationId);
       const canonicalAuthority = await this.getCanonicalAuthority(request);
       const configClaims = request.skipBrokerClaims && !!request.embeddedClientId ? void 0 : this.config.auth.clientCapabilities;
-      const { scopes, claims } = request;
-      const scopeSet = new ScopeSet(scopes || [], this.correlationId);
-      scopeSet.appendScopes(Constants_exports.OIDC_DEFAULT_SCOPES);
+      const { scopes, claims, extraParametersNoCache, dpopNonce } = request;
+      const scopeSet = new ScopeSet([...scopes || [], ...Constants_exports.OIDC_DEFAULT_SCOPES], this.correlationId);
       const mergedClaims = RequestParameterBuilder_exports.buildMergedClaims(claims, (configClaims == null ? void 0 : configClaims.length) ? configClaims : void 0);
       const hasAttributeTokens = !!((_a = request.attributeTokens) == null ? void 0 : _a.length);
       (_b = this.performanceClient) == null ? void 0 : _b.addFields({
@@ -11010,7 +11124,8 @@
         resourceRequestMethod: request.resourceRequestMethod,
         resourceRequestUri: request.resourceRequestUri,
         shrClaims: request.shrClaims,
-        shrNonce: request.shrNonce
+        shrNonce: request.shrNonce,
+        extraParametersNoCache: createPlatformAuthExtraParametersNoCache(extraParametersNoCache, isProofOfPossessionTokenType(request.authenticationScheme), request.resourceRequestMethod, request.resourceRequestUri, dpopNonce)
       };
       if (hasAttributeTokens) {
         validatedRequest.attributeTokens = CacheHelpers_exports.serializeAttributeTokens(request.attributeTokens);
@@ -11597,7 +11712,7 @@
 
   // node_modules/@azure/msal-browser/dist/broker/nativeBroker/PlatformAuthExtensionHandler.mjs
   var PlatformAuthExtensionHandler = class _PlatformAuthExtensionHandler {
-    constructor(logger, handshakeTimeoutMs, performanceClient, extensionId) {
+    constructor(logger, handshakeTimeoutMs, performanceClient, extensionId, correlationId) {
       this.logger = logger;
       this.handshakeTimeoutMs = handshakeTimeoutMs;
       this.extensionId = extensionId;
@@ -11606,7 +11721,8 @@
       this.messageChannel = new MessageChannel();
       this.windowListener = this.onWindowMessage.bind(this);
       this.performanceClient = performanceClient;
-      this.handshakeEvent = this.performanceClient.startMeasurement(NativeMessageHandlerHandshake);
+      this.correlationId = correlationId || createNewGuid();
+      this.handshakeEvent = this.performanceClient.startMeasurement(NativeMessageHandlerHandshake, this.correlationId);
       this.platformAuthType = PlatformAuthConstants.PLATFORM_EXTENSION_PROVIDER;
     }
     /**
@@ -11614,25 +11730,49 @@
      * @param request
      */
     async sendMessage(request) {
-      this.logger.trace(`0on4p2 ${this.platformAuthType}`, request.correlationId);
-      const messageBody = {
-        method: NativeExtensionMethod.GetToken,
-        request
-      };
-      const req = {
-        channel: PlatformAuthConstants.CHANNEL_ID,
-        extensionId: this.extensionId,
-        responseId: createNewGuid(),
-        body: messageBody
-      };
-      this.logger.trace(`1qadfi ${this.platformAuthType}`, request.correlationId);
-      this.logger.tracePii(`1xm533 ${this.platformAuthType} ${JSON.stringify(req)}`, request.correlationId);
-      this.messageChannel.port1.postMessage(req);
-      const response = await new Promise((resolve, reject) => {
-        this.resolvers.set(req.responseId, { resolve, reject });
+      const correlationId = this.getCorrelationId(request.correlationId);
+      const sendMessageMeasurement = this.performanceClient.startMeasurement(PlatformAuthExtensionGetToken, correlationId);
+      sendMessageMeasurement.add({
+        platformAuthProviderType: this.platformAuthType
       });
-      const validatedResponse = this.validatePlatformBrokerResponse(response);
-      return validatedResponse;
+      this.logger.trace(`0on4p2 ${this.platformAuthType}`, correlationId);
+      try {
+        const extensionRequest = { ...request };
+        delete extensionRequest.resourceRequestMethod;
+        delete extensionRequest.resourceRequestUri;
+        const messageBody = {
+          method: NativeExtensionMethod.GetToken,
+          request: extensionRequest
+        };
+        const req = {
+          channel: PlatformAuthConstants.CHANNEL_ID,
+          extensionId: this.extensionId,
+          responseId: createNewGuid(),
+          body: messageBody
+        };
+        this.logger.trace(`1qadfi ${this.platformAuthType}`, correlationId);
+        this.logger.tracePii(`1xm533 ${this.platformAuthType} ${JSON.stringify(req)}`, correlationId);
+        this.messageChannel.port1.postMessage(req);
+        const response = await new Promise((resolve, reject) => {
+          this.resolvers.set(req.responseId, {
+            resolve,
+            reject,
+            correlationId
+          });
+        });
+        const validatedResponse = this.validatePlatformBrokerResponse(response, correlationId);
+        sendMessageMeasurement.end({
+          success: true,
+          platformAuthProviderType: this.platformAuthType
+        });
+        return validatedResponse;
+      } catch (e) {
+        sendMessageMeasurement.end({
+          success: false,
+          platformAuthProviderType: this.platformAuthType
+        }, e);
+        throw e;
+      }
     }
     /**
      * Returns an instance of the MessageHandler that has successfully established a connection with an extension
@@ -11643,21 +11783,48 @@
      */
     static async createProvider(logger, handshakeTimeoutMs, performanceClient, correlationId) {
       logger.trace("15zfnw", correlationId);
+      const createProviderMeasurement = performanceClient.startMeasurement(PlatformAuthExtensionCreateProvider, correlationId);
       try {
-        const preferredProvider = new _PlatformAuthExtensionHandler(logger, handshakeTimeoutMs, performanceClient, PlatformAuthConstants.PREFERRED_EXTENSION_ID);
-        await preferredProvider.sendHandshakeRequest(correlationId);
+        const preferredProvider = new _PlatformAuthExtensionHandler(logger, handshakeTimeoutMs, performanceClient, PlatformAuthConstants.PREFERRED_EXTENSION_ID, correlationId);
+        await preferredProvider.sendHandshakeRequest();
+        createProviderMeasurement.add({
+          platformAuthProviderAvailable: true,
+          platformAuthProviderType: PlatformAuthConstants.PLATFORM_EXTENSION_PROVIDER
+        });
+        createProviderMeasurement.end({
+          platformAuthProviderAvailable: true,
+          platformAuthProviderType: PlatformAuthConstants.PLATFORM_EXTENSION_PROVIDER
+        });
         return preferredProvider;
       } catch (e) {
-        const backupProvider = new _PlatformAuthExtensionHandler(logger, handshakeTimeoutMs, performanceClient);
-        await backupProvider.sendHandshakeRequest(correlationId);
-        return backupProvider;
+        try {
+          const backupProvider = new _PlatformAuthExtensionHandler(logger, handshakeTimeoutMs, performanceClient, void 0, correlationId);
+          await backupProvider.sendHandshakeRequest();
+          createProviderMeasurement.add({
+            platformAuthProviderAvailable: true,
+            platformAuthProviderType: PlatformAuthConstants.PLATFORM_EXTENSION_PROVIDER
+          });
+          createProviderMeasurement.end({
+            platformAuthProviderAvailable: true,
+            platformAuthProviderType: PlatformAuthConstants.PLATFORM_EXTENSION_PROVIDER
+          });
+          return backupProvider;
+        } catch (backupError) {
+          createProviderMeasurement.add({
+            platformAuthProviderAvailable: false
+          });
+          createProviderMeasurement.end({
+            platformAuthProviderAvailable: false
+          }, backupError);
+          throw backupError;
+        }
       }
     }
     /**
      * Send handshake request helper.
      */
-    async sendHandshakeRequest(correlationId) {
-      this.logger.trace(`1dpg9o ${this.platformAuthType}`, correlationId);
+    async sendHandshakeRequest() {
+      this.logger.trace(`1dpg9o ${this.platformAuthType}`, this.correlationId);
       window.addEventListener("message", this.windowListener, false);
       const req = {
         channel: PlatformAuthConstants.CHANNEL_ID,
@@ -11669,23 +11836,31 @@
       };
       this.handshakeEvent.add({
         extensionId: this.extensionId,
-        extensionHandshakeTimeoutMs: this.handshakeTimeoutMs
+        extensionHandshakeTimeoutMs: this.handshakeTimeoutMs,
+        platformAuthRequestCorrelationId: this.correlationId
       });
       this.messageChannel.port1.onmessage = (event) => {
         this.onChannelMessage(event);
       };
       window.postMessage(req, window.origin, [this.messageChannel.port2]);
       return new Promise((resolve, reject) => {
-        this.handshakeResolvers.set(req.responseId, { resolve, reject });
+        this.handshakeResolvers.set(req.responseId, {
+          resolve,
+          reject,
+          correlationId: this.correlationId
+        });
         this.timeoutId = window.setTimeout(() => {
           window.removeEventListener("message", this.windowListener, false);
           this.messageChannel.port1.close();
           this.messageChannel.port2.close();
+          this.handshakeEvent.add({
+            extensionHandshakeTimedOut: true
+          });
           this.handshakeEvent.end({
             extensionHandshakeTimedOut: true,
             success: false
           });
-          reject(createBrowserAuthError(nativeHandshakeTimeout, ""));
+          reject(createBrowserAuthError(nativeHandshakeTimeout, this.correlationId));
           this.handshakeResolvers.delete(req.responseId);
         }, this.handshakeTimeoutMs);
       });
@@ -11695,7 +11870,7 @@
      * @param event
      */
     onWindowMessage(event) {
-      const correlationId = createGuid();
+      let correlationId = createGuid();
       this.logger.trace(`0jpn5u ${this.platformAuthType}`, correlationId);
       if (event.source !== window) {
         return;
@@ -11713,16 +11888,21 @@
           this.logger.trace(`07buhm ${this.platformAuthType} ${request.responseId}`, correlationId);
           return;
         }
+        correlationId = handshakeResolver.correlationId;
         this.logger.verbose(request.extensionId ? `0xrkug ${request.extensionId}` : "No extension installed", correlationId);
         clearTimeout(this.timeoutId);
         this.messageChannel.port1.close();
         this.messageChannel.port2.close();
         window.removeEventListener("message", this.windowListener, false);
+        this.handshakeEvent.add({
+          extensionInstalled: false
+        });
         this.handshakeEvent.end({
           success: false,
           extensionInstalled: false
         });
-        handshakeResolver.reject(createBrowserAuthError(nativeExtensionNotInstalled, ""));
+        handshakeResolver.reject(createBrowserAuthError(nativeExtensionNotInstalled, correlationId));
+        this.handshakeResolvers.delete(request.responseId);
       }
     }
     /**
@@ -11730,32 +11910,37 @@
      * @param event
      */
     onChannelMessage(event) {
-      const correlationId = createGuid();
-      this.logger.trace(`1py8yf ${this.platformAuthType}`, correlationId);
+      var _a;
       const request = event.data;
-      const resolver = this.resolvers.get(request.responseId);
-      const handshakeResolver = this.handshakeResolvers.get(request.responseId);
+      const responseId = request == null ? void 0 : request.responseId;
+      const resolver = responseId ? this.resolvers.get(responseId) : void 0;
+      const handshakeResolver = responseId ? this.handshakeResolvers.get(responseId) : void 0;
+      const correlationId = (resolver == null ? void 0 : resolver.correlationId) || (handshakeResolver == null ? void 0 : handshakeResolver.correlationId) || createGuid();
+      this.logger.trace(`1py8yf ${this.platformAuthType}`, correlationId);
       try {
         const method = request.body.method;
         if (method === NativeExtensionMethod.Response) {
           if (!resolver) {
             return;
           }
-          const response = request.body.response;
-          this.logger.trace(`19hpgm ${this.platformAuthType}`, correlationId);
-          this.logger.tracePii(`179a24 ${this.platformAuthType} ${JSON.stringify(response)}`, correlationId);
-          if (response.status !== "Success") {
-            resolver.reject(createNativeAuthError(response.code, correlationId, response.description, response.ext));
-          } else if (response.result) {
-            if (response.result["code"] && response.result["description"]) {
-              resolver.reject(createNativeAuthError(response.result["code"], correlationId, response.result["description"], response.result["ext"]));
+          try {
+            const response = request.body.response;
+            this.logger.trace(`19hpgm ${this.platformAuthType}`, correlationId);
+            this.logger.tracePii(`179a24 ${this.platformAuthType} ${JSON.stringify(response)}`, correlationId);
+            if (response.status !== "Success") {
+              resolver.reject(createNativeAuthError(response.code, correlationId, response.description, response.ext));
+            } else if (response.result) {
+              if (response.result["code"] && response.result["description"]) {
+                resolver.reject(createNativeAuthError(response.result["code"], correlationId, response.result["description"], response.result["ext"]));
+              } else {
+                resolver.resolve(response.result);
+              }
             } else {
-              resolver.resolve(response.result);
+              throw createAuthError(AuthErrorCodes_exports.unexpectedError, correlationId, "Event does not contain result.");
             }
-          } else {
-            throw createAuthError(AuthErrorCodes_exports.unexpectedError, correlationId, "Event does not contain result.");
+          } finally {
+            this.resolvers.delete(request.responseId);
           }
-          this.resolvers.delete(request.responseId);
         } else if (method === NativeExtensionMethod.HandshakeResponse) {
           if (!handshakeResolver) {
             this.logger.trace(`082qnt ${this.platformAuthType} ${request.responseId}`, correlationId);
@@ -11764,22 +11949,41 @@
           clearTimeout(this.timeoutId);
           window.removeEventListener("message", this.windowListener, false);
           this.extensionId = request.extensionId;
-          this.extensionVersion = request.body.version;
+          this.extensionVersion = (_a = request.body.version) == null ? void 0 : _a.toString();
           this.logger.verbose(`0yf5ib ${this.platformAuthType} ${this.extensionId}`, correlationId);
+          this.handshakeEvent.add({
+            extensionId: this.extensionId,
+            extensionVersion: this.extensionVersion,
+            extensionInstalled: true
+          });
           this.handshakeEvent.end({
+            extensionId: this.extensionId,
+            extensionVersion: this.extensionVersion,
             extensionInstalled: true,
             success: true
           });
           handshakeResolver.resolve();
           this.handshakeResolvers.delete(request.responseId);
+        } else if (resolver) {
+          this.resolvers.delete(request.responseId);
+          resolver.reject(createAuthError(AuthErrorCodes_exports.unexpectedError, correlationId, "Extension response contains an unexpected method."));
         }
       } catch (err) {
         this.logger.error("0xf978", correlationId);
         this.logger.errorPii(`04i99o ${err}`, correlationId);
         this.logger.errorPii(`0xdvsy ${event}`, correlationId);
         if (resolver) {
-          resolver.reject(err);
+          this.resolvers.delete(responseId);
+          resolver.reject(err instanceof AuthError ? err : createAuthError(AuthErrorCodes_exports.unexpectedError, correlationId, "Unable to parse extension response."));
         } else if (handshakeResolver) {
+          clearTimeout(this.timeoutId);
+          window.removeEventListener("message", this.windowListener, false);
+          this.messageChannel.port1.close();
+          this.messageChannel.port2.close();
+          this.handshakeEvent.end({
+            success: false
+          });
+          this.handshakeResolvers.delete(responseId);
           handshakeResolver.reject(err);
         }
       }
@@ -11788,12 +11992,26 @@
      * Validates native platform response before processing
      * @param response
      */
-    validatePlatformBrokerResponse(response) {
-      if (response.hasOwnProperty("access_token") && response.hasOwnProperty("id_token") && response.hasOwnProperty("client_info") && response.hasOwnProperty("account") && response.hasOwnProperty("scope") && response.hasOwnProperty("expires_in")) {
+    validatePlatformBrokerResponse(response, correlationId) {
+      const responseCorrelationId = this.getCorrelationId(correlationId);
+      const validationMeasurement = this.performanceClient.startMeasurement(PlatformAuthExtensionValidateResponse, responseCorrelationId);
+      if (response && Object.prototype.hasOwnProperty.call(response, "access_token") && Object.prototype.hasOwnProperty.call(response, "id_token") && Object.prototype.hasOwnProperty.call(response, "client_info") && Object.prototype.hasOwnProperty.call(response, "account") && Object.prototype.hasOwnProperty.call(response, "scope") && Object.prototype.hasOwnProperty.call(response, "expires_in")) {
+        validationMeasurement.end({
+          success: true,
+          platformAuthProviderType: this.platformAuthType
+        });
         return response;
       } else {
-        throw createAuthError(AuthErrorCodes_exports.unexpectedError, "", "Response missing expected properties.");
+        const error = createAuthError(AuthErrorCodes_exports.unexpectedError, responseCorrelationId, "Response missing expected properties.");
+        validationMeasurement.end({
+          success: false,
+          platformAuthProviderType: this.platformAuthType
+        }, error);
+        throw error;
       }
+    }
+    getCorrelationId(correlationId) {
+      return correlationId || this.correlationId;
     }
     /**
      * Returns the Id for the browser extension this handler is communicating with
@@ -11824,19 +12042,49 @@
       this.platformAuthType = PlatformAuthConstants.PLATFORM_DOM_PROVIDER;
     }
     static async createProvider(logger, performanceClient, correlationId) {
-      var _a;
       logger.trace("12mj4a", correlationId);
-      if ((_a = window.navigator) == null ? void 0 : _a.platformAuthentication) {
-        const supportedContracts = (
-          // @ts-ignore
-          await window.navigator.platformAuthentication.getSupportedContracts(PlatformAuthConstants.MICROSOFT_ENTRA_BROKERID)
-        );
-        if (supportedContracts == null ? void 0 : supportedContracts.includes(PlatformAuthConstants.PLATFORM_DOM_APIS)) {
+      const createProviderMeasurement = performanceClient.startMeasurement(PlatformAuthDOMCreateProvider, correlationId);
+      try {
+        const platformAuthentication = window.navigator.platformAuthentication;
+        if (!platformAuthentication) {
+          createProviderMeasurement.add({
+            platformAuthProviderAvailable: false
+          });
+          createProviderMeasurement.end({
+            platformAuthProviderAvailable: false
+          });
+          return void 0;
+        }
+        const supportedContracts = await invokeAsync(platformAuthentication.getSupportedContracts.bind(platformAuthentication), PlatformAuthDOMGetSupportedContracts, logger, performanceClient, correlationId)(PlatformAuthConstants.MICROSOFT_ENTRA_BROKERID);
+        const contractSupported = supportedContracts == null ? void 0 : supportedContracts.includes(PlatformAuthConstants.PLATFORM_DOM_APIS);
+        if (contractSupported) {
           logger.trace("1h5q1r", correlationId);
+          createProviderMeasurement.add({
+            platformAuthProviderAvailable: true,
+            platformAuthProviderType: PlatformAuthConstants.PLATFORM_DOM_PROVIDER
+          });
+          createProviderMeasurement.end({
+            platformAuthProviderAvailable: true,
+            platformAuthProviderType: PlatformAuthConstants.PLATFORM_DOM_PROVIDER
+          });
           return new _PlatformAuthDOMHandler(logger, performanceClient, correlationId);
         }
+        createProviderMeasurement.add({
+          platformAuthProviderAvailable: false
+        });
+        createProviderMeasurement.end({
+          platformAuthProviderAvailable: false
+        });
+        return void 0;
+      } catch (e) {
+        createProviderMeasurement.add({
+          platformAuthProviderAvailable: false
+        });
+        createProviderMeasurement.end({
+          platformAuthProviderAvailable: false
+        }, e);
+        throw e;
       }
-      return void 0;
     }
     /**
      * Returns the Id for the broker extension this handler is communicating with
@@ -11857,29 +12105,46 @@
      * @returns
      */
     async sendMessage(request) {
-      this.logger.trace(`02bcil ${this.platformAuthType}`, request.correlationId);
+      const correlationId = this.getCorrelationId(request.correlationId);
+      const sendMessageMeasurement = this.performanceClient.startMeasurement(PlatformAuthDOMGetToken, correlationId);
+      sendMessageMeasurement.add({
+        platformAuthProviderType: this.platformAuthType
+      });
+      this.logger.trace(`02bcil ${this.platformAuthType}`, correlationId);
       try {
-        const platformDOMRequest = this.initializePlatformDOMRequest(request);
+        const platformDOMRequest = invoke(this.initializePlatformDOMRequest.bind(this), PlatformAuthDOMInitializeRequest, this.logger, this.performanceClient, correlationId)(request);
         const response = (
           // @ts-ignore
           await window.navigator.platformAuthentication.executeGetToken(platformDOMRequest)
         );
-        return this.validatePlatformBrokerResponse(response, request.correlationId);
+        const validatedResponse = this.validatePlatformBrokerResponse(response, correlationId);
+        sendMessageMeasurement.end({
+          success: true,
+          platformAuthProviderType: this.platformAuthType
+        });
+        return validatedResponse;
       } catch (e) {
-        this.logger.error(`11im7g ${this.platformAuthType}`, request.correlationId);
+        this.logger.error(`11im7g ${this.platformAuthType}`, correlationId);
+        sendMessageMeasurement.end({
+          success: false,
+          platformAuthProviderType: this.platformAuthType
+        }, e);
         throw e;
       }
     }
     initializePlatformDOMRequest(request) {
-      this.logger.trace(`15d6yv ${this.platformAuthType}`, request.correlationId);
-      const { accountId, clientId, authority, scope, redirectUri, correlationId, state, extraParameters, ...remainingProperties } = request;
-      const validExtraParameters = this.getDOMExtraParams(remainingProperties, correlationId);
+      const { accountId, clientId, authority, scope, redirectUri, correlationId, state, preferBinding, enclave, reqCnf, extraParametersNoCache, extraParameters, ...remainingProperties } = request;
+      const requestCorrelationId = this.getCorrelationId(correlationId);
+      this.logger.trace(`15d6yv ${this.platformAuthType}`, requestCorrelationId);
+      delete remainingProperties.resourceRequestMethod;
+      delete remainingProperties.resourceRequestUri;
+      const validExtraParameters = this.getDOMExtraParams(remainingProperties, requestCorrelationId);
       const platformDOMRequest = {
         accountId,
         brokerId: this.getExtensionId(),
         authority,
         clientId,
-        correlationId: correlationId || this.correlationId,
+        correlationId: requestCorrelationId,
         extraParameters: {
           ...extraParameters,
           ...validExtraParameters
@@ -11887,33 +12152,77 @@
         isSecurityTokenService: false,
         redirectUri,
         scope,
-        state
+        state,
+        preferBinding,
+        enclave,
+        requestConfirmation: reqCnf,
+        extraParametersNoCache
       };
       return platformDOMRequest;
     }
     validatePlatformBrokerResponse(response, correlationId) {
-      if (response.hasOwnProperty("isSuccess")) {
-        if (response.hasOwnProperty("accessToken") && response.hasOwnProperty("idToken") && response.hasOwnProperty("clientInfo") && response.hasOwnProperty("account") && response.hasOwnProperty("scopes") && response.hasOwnProperty("expiresIn")) {
+      const validationMeasurement = this.performanceClient.startMeasurement(PlatformAuthDOMValidateResponse, correlationId);
+      const requiredKeys = [
+        "accessToken",
+        "idToken",
+        "clientInfo",
+        "account",
+        "scopes",
+        "expiresIn"
+      ];
+      const isValid = response && requiredKeys.every((key) => Object.prototype.hasOwnProperty.call(response, key));
+      if (response && Object.prototype.hasOwnProperty.call(response, "isSuccess")) {
+        if (isValid) {
           this.logger.trace(`0h4vei ${this.platformAuthType}`, correlationId);
-          return this.convertToPlatformBrokerResponse(response, correlationId);
-        } else if (response.hasOwnProperty("error")) {
+          try {
+            const validatedResponse = this.convertToPlatformBrokerResponse(response, correlationId);
+            validationMeasurement.end({
+              success: true,
+              platformAuthProviderType: this.platformAuthType
+            });
+            return validatedResponse;
+          } catch (e) {
+            validationMeasurement.end({
+              success: false,
+              platformAuthProviderType: this.platformAuthType
+            }, e);
+            throw e;
+          }
+        } else if (Object.prototype.hasOwnProperty.call(response, "error")) {
           const errorResponse = response;
           if (errorResponse.isSuccess === false && errorResponse.error && errorResponse.error.code) {
             this.logger.trace(`0g92vm ${this.platformAuthType}`, correlationId);
-            throw createNativeAuthError(errorResponse.error.code, correlationId, errorResponse.error.description, {
+            const nativeAuthError = createNativeAuthError(errorResponse.error.code, correlationId, errorResponse.error.description, {
               error: parseInt(errorResponse.error.errorCode),
               protocol_error: errorResponse.error.protocolError,
               status: errorResponse.error.status,
               properties: errorResponse.error.properties
             });
+            validationMeasurement.end({
+              success: false,
+              platformAuthProviderType: this.platformAuthType,
+              brokerErrorName: errorResponse.error.code,
+              brokerErrorCode: errorResponse.error.errorCode
+            }, nativeAuthError);
+            throw nativeAuthError;
           }
         }
       }
-      throw createAuthError(AuthErrorCodes_exports.unexpectedError, correlationId, "Response missing expected properties.");
+      const error = createAuthError(AuthErrorCodes_exports.unexpectedError, correlationId, "Response missing expected properties.");
+      validationMeasurement.end({
+        success: false,
+        platformAuthProviderType: this.platformAuthType
+      }, error);
+      throw error;
+    }
+    getCorrelationId(correlationId) {
+      return correlationId || this.correlationId;
     }
     convertToPlatformBrokerResponse(response, correlationId) {
       var _a;
       this.logger.trace(`14913t ${this.platformAuthType}`, correlationId);
+      const responseProperties = response.properties || {};
+      const bindingAttested = this.parseDOMBoolean(responseProperties.binding_attested, "binding_attested", correlationId);
       const nativeResponse = {
         access_token: response.accessToken,
         id_token: response.idToken,
@@ -11922,11 +12231,23 @@
         expires_in: response.expiresIn,
         scope: response.scopes,
         state: response.state || "",
-        properties: response.properties || {},
+        properties: responseProperties,
         extendedLifetimeToken: (_a = response.extendedLifetimeToken) != null ? _a : false,
-        shr: response.proofOfPossessionPayload
+        shr: response.proofOfPossessionPayload,
+        token_type: responseProperties.token_type,
+        DPoP: responseProperties.dpop_proof,
+        binding_attested: bindingAttested
       };
       return nativeResponse;
+    }
+    parseDOMBoolean(value, propertyName, correlationId) {
+      if (value === void 0) {
+        return void 0;
+      }
+      if (value === "true" || value === "false") {
+        return value === "true";
+      }
+      throw createAuthError(AuthErrorCodes_exports.unexpectedError, correlationId, `Platform broker returned invalid ${propertyName} value.`);
     }
     getDOMExtraParams(extraParameters, correlationId) {
       try {
@@ -11953,23 +12274,56 @@
   // node_modules/@azure/msal-browser/dist/broker/nativeBroker/PlatformAuthProvider.mjs
   async function getPlatformAuthProvider(logger, performanceClient, correlationId, nativeBrokerHandshakeTimeout, enablePlatformBrokerDOMSupport) {
     logger.trace("134j0v", correlationId);
+    const discoveryMeasurement = performanceClient.startMeasurement(PlatformAuthProviderDiscovery, correlationId);
     logger.trace(`04c81g ${enablePlatformBrokerDOMSupport}`, correlationId);
     let platformAuthProvider;
     try {
       if (enablePlatformBrokerDOMSupport) {
-        platformAuthProvider = await PlatformAuthDOMHandler.createProvider(logger, performanceClient, correlationId);
+        try {
+          platformAuthProvider = await PlatformAuthDOMHandler.createProvider(logger, performanceClient, correlationId);
+        } catch (e) {
+          logger.trace("1ij09j", correlationId);
+        }
+        if (platformAuthProvider) {
+          discoveryMeasurement.add({
+            platformAuthProviderType: PlatformAuthConstants.PLATFORM_DOM_PROVIDER
+          });
+          discoveryMeasurement.end({
+            success: true,
+            platformAuthProviderType: PlatformAuthConstants.PLATFORM_DOM_PROVIDER
+          });
+          return platformAuthProvider;
+        }
       }
-      if (!platformAuthProvider) {
-        logger.trace("0l3na8", correlationId);
-        platformAuthProvider = await PlatformAuthExtensionHandler.createProvider(logger, nativeBrokerHandshakeTimeout || DEFAULT_NATIVE_BROKER_HANDSHAKE_TIMEOUT_MS, performanceClient, correlationId);
+      logger.trace("0l3na8", correlationId);
+      platformAuthProvider = await PlatformAuthExtensionHandler.createProvider(logger, nativeBrokerHandshakeTimeout || DEFAULT_NATIVE_BROKER_HANDSHAKE_TIMEOUT_MS, performanceClient, correlationId);
+      if (platformAuthProvider) {
+        discoveryMeasurement.add({
+          platformAuthProviderType: PlatformAuthConstants.PLATFORM_EXTENSION_PROVIDER
+        });
       }
+      discoveryMeasurement.end({
+        success: !!platformAuthProvider,
+        platformAuthProviderType: platformAuthProvider ? PlatformAuthConstants.PLATFORM_EXTENSION_PROVIDER : void 0
+      });
     } catch (e) {
       logger.trace("0icbd7", e);
+      discoveryMeasurement.end({
+        success: false
+      }, e);
     }
     return platformAuthProvider;
   }
-  function isPlatformAuthAllowed(config, logger, correlationId, platformAuthProvider, authenticationScheme) {
+  function isPlatformAuthAllowed(config, logger, correlationId, platformAuthProvider, authenticationScheme, performanceClient) {
     logger.trace("0uko3r", correlationId);
+    const schemeSupported = !authenticationScheme || authenticationScheme === Constants_exports.AuthenticationScheme.BEARER || authenticationScheme === Constants_exports.AuthenticationScheme.POP;
+    const fields = {
+      allowPlatformBroker: config.system.allowPlatformBroker,
+      ...config.system.allowPlatformBroker && {
+        platformAuthProviderType: platformAuthProvider instanceof PlatformAuthDOMHandler ? PlatformAuthConstants.PLATFORM_DOM_PROVIDER : platformAuthProvider ? PlatformAuthConstants.PLATFORM_EXTENSION_PROVIDER : void 0
+      }
+    };
+    performanceClient == null ? void 0 : performanceClient.addFields(fields, correlationId);
     if (!config.system.allowPlatformBroker && config.experimental.allowPlatformBrokerWithDOM) {
       throw createClientConfigurationError(ClientConfigurationErrorCodes_exports.invalidPlatformBrokerConfiguration, "");
     }
@@ -11981,17 +12335,11 @@
       logger.trace("0kvv1r", correlationId);
       return false;
     }
-    if (authenticationScheme) {
-      switch (authenticationScheme) {
-        case Constants_exports.AuthenticationScheme.BEARER:
-        case Constants_exports.AuthenticationScheme.POP:
-          logger.trace("18tev1", correlationId);
-          return true;
-        default:
-          logger.trace("1dd2nh", correlationId);
-          return false;
-      }
+    if (!schemeSupported) {
+      logger.trace("1dd2nh", correlationId);
+      return false;
     }
+    logger.trace("18tev1", correlationId);
     return true;
   }
 
@@ -12422,11 +12770,16 @@
     async acquireToken(request) {
       const validRequest = await invokeAsync(initializeAuthorizationRequest, StandardInteractionClientInitializeAuthorizationRequest, this.logger, this.performanceClient, this.correlationId)(request, InteractionType.Redirect, this.config, this.browserCrypto, this.browserStorage, this.logger, this.performanceClient, this.correlationId);
       validRequest.platformBroker = isPlatformAuthAllowed(this.config, this.logger, this.correlationId, this.platformAuthProvider, request.authenticationScheme);
+      let rejectBackButtonCancellation;
+      const backButtonCancellation = new Promise((_, reject) => {
+        rejectBackButtonCancellation = reject;
+      });
       const handleBackButton = (event) => {
         if (event.persisted) {
           this.logger.verbose("0udvtt", this.correlationId);
           this.browserStorage.resetRequestCache(this.correlationId);
           this.eventHandler.emitEvent(EventType.RESTORE_FROM_BFCACHE, this.correlationId, InteractionType.Redirect);
+          rejectBackButtonCancellation(createBrowserAuthError(userCancelled, this.correlationId));
         }
       };
       const redirectStartPage = this.getRedirectStartPage(request.redirectStartPage);
@@ -12434,11 +12787,8 @@
       this.browserStorage.setTemporaryCache(TemporaryCacheKeys.ORIGIN_URI, redirectStartPage, true);
       window.addEventListener("pageshow", handleBackButton);
       try {
-        if (this.config.system.protocolMode === ProtocolMode.EAR) {
-          await this.executeEarFlow(validRequest);
-        } else {
-          await this.executeCodeFlow(validRequest);
-        }
+        const redirectOperation = this.config.system.protocolMode === ProtocolMode.EAR ? this.executeEarFlow(validRequest) : this.executeCodeFlow(validRequest);
+        await Promise.race([redirectOperation, backButtonCancellation]);
       } catch (e) {
         if (e instanceof AuthError) {
           e.correlationId = this.correlationId;
@@ -13168,6 +13518,83 @@
     });
   }
 
+  // node_modules/@azure/msal-browser/dist/request/SilentRequestHelpers.mjs
+  function resolveSilentRequestPreparation(input, platformAuthProvider, logger, performanceClient) {
+    const { request, account, correlationId, config } = input;
+    const prepareRequest = account.nativeAccountId && isPlatformAuthAllowed(config, logger, correlationId, platformAuthProvider, request.authenticationScheme, performanceClient) ? preparePlatformSilentRequest : prepareWebSilentRequest;
+    return prepareRequest(input);
+  }
+  function prepareWebSilentRequest({ request, account, correlationId, config }) {
+    const thumbprint = getRequestThumbprint(config.auth.clientId, {
+      ...request,
+      authority: request.authority || config.auth.authority,
+      correlationId
+    }, account.homeAccountId);
+    return {
+      key: JSON.stringify(thumbprint),
+      request,
+      account
+    };
+  }
+  function preparePlatformSilentRequest({ request, account, config }) {
+    const platformRequest = snapshotPlatformSilentRequest({
+      ...request,
+      account
+    });
+    return {
+      key: `platform:${getPlatformSilentRequestKey(platformRequest, config)}`,
+      request: platformRequest,
+      account: platformRequest.account
+    };
+  }
+  function getPlatformSilentRequestKey(request, config) {
+    var _a, _b, _c;
+    const thumbprint = getRequestThumbprint(config.auth.clientId, {
+      ...request,
+      authority: request.authority || config.auth.authority,
+      correlationId: request.correlationId || "",
+      scopes: new ScopeSet([...request.scopes || [], ...Constants_exports.OIDC_DEFAULT_SCOPES], request.correlationId || "").asArray().sort()
+    }, request.account.homeAccountId);
+    return JSON.stringify({
+      ...thumbprint,
+      accountId: request.account.nativeAccountId,
+      accountTenantId: request.account.tenantId,
+      accountEnvironment: request.account.environment,
+      azureCloudInstance: (_a = request.azureCloudOptions) == null ? void 0 : _a.azureCloudInstance,
+      cloudTenantId: (_b = request.azureCloudOptions) == null ? void 0 : _b.tenant,
+      redirectUri: request.redirectUri || config.auth.redirectUri,
+      nonce: request.nonce,
+      prompt: request.prompt,
+      state: request.state,
+      loginHint: request.loginHint,
+      popKid: request.popKid,
+      shrNonce: request.shrNonce,
+      dpopNonce: request.dpopNonce,
+      skipBrokerClaims: request.embeddedClientId ? !!request.skipBrokerClaims : void 0,
+      extraParameters: canonicalizeStringDict(request.extraParameters),
+      extraQueryParameters: canonicalizeStringDict(request.extraQueryParameters),
+      extraParametersNoCache: canonicalizeStringDict(request.extraParametersNoCache),
+      forceRefresh: !!request.forceRefresh,
+      cacheLookupPolicy: (_c = request.cacheLookupPolicy) != null ? _c : CacheLookupPolicy.Default
+    });
+  }
+  function snapshotPlatformSilentRequest(request) {
+    return {
+      ...request,
+      scopes: [...request.scopes || []],
+      account: { ...request.account },
+      azureCloudOptions: request.azureCloudOptions ? { ...request.azureCloudOptions } : void 0,
+      extraParameters: request.extraParameters ? { ...request.extraParameters } : void 0,
+      extraQueryParameters: request.extraQueryParameters ? { ...request.extraQueryParameters } : void 0,
+      extraParametersNoCache: request.extraParametersNoCache ? { ...request.extraParametersNoCache } : void 0,
+      attributeTokens: request.attributeTokens ? [...request.attributeTokens] : void 0,
+      storeInCache: request.storeInCache ? { ...request.storeInCache } : void 0
+    };
+  }
+  function canonicalizeStringDict(values = {}) {
+    return Object.keys(values).sort().map((key) => [key, values[key]]);
+  }
+
   // node_modules/@azure/msal-browser/dist/controllers/StandardController.mjs
   function preflightCheck2(initialized, performanceEvent, config, request) {
     try {
@@ -13211,6 +13638,9 @@
       this.redirectResponse = /* @__PURE__ */ new Map();
       this.hybridAuthCodeResponses = /* @__PURE__ */ new Map();
       this.performanceClient = this.config.telemetry.client;
+      this.performanceClient.addGlobalFields({
+        allowPlatformBroker: this.config.system.allowPlatformBroker
+      });
       if (this.isBrowserEnvironment) {
         this.browserCrypto = new CryptoOps(this.logger, this.performanceClient);
         this.tokenBindingKeyManager = new TokenBindingKeyManager(this.logger, this.performanceClient);
@@ -13432,8 +13862,9 @@
         enforceResourceParameter(this.config.auth.isMcp, request);
         this.eventHandler.emitEvent(EventType.ACQUIRE_TOKEN_START, correlationId, InteractionType.Redirect, request);
         let result;
-        if (this.platformAuthProvider && this.canUsePlatformBroker(request)) {
-          const nativeClient = new PlatformAuthInteractionClient(this.config, this.browserStorage, this.browserCrypto, this.logger, this.eventHandler, this.navigationClient, ApiId.acquireTokenRedirect, this.performanceClient, this.platformAuthProvider, this.getNativeAccountId(request), this.nativeInternalStorage, correlationId, this.tokenBindingKeyManager);
+        const platformAuthProvider = this.platformAuthProvider;
+        if (this.canUsePlatformBroker(request) && platformAuthProvider) {
+          const nativeClient = new PlatformAuthInteractionClient(this.config, this.browserStorage, this.browserCrypto, this.logger, this.eventHandler, this.navigationClient, ApiId.acquireTokenRedirect, this.performanceClient, platformAuthProvider, this.getNativeAccountId(request), this.nativeInternalStorage, correlationId, this.tokenBindingKeyManager);
           result = invokeAsync(nativeClient.acquireTokenRedirect.bind(nativeClient), NativeInteractionClientAcquireTokenRedirect, this.logger, this.performanceClient, correlationId)(request, atrMeasurement).catch((e) => {
             if (e instanceof NativeAuthError && isFatalNativeAuthError(e)) {
               this.platformAuthProvider = void 0;
@@ -14050,11 +14481,8 @@
     canUsePlatformBroker(request, accountId) {
       const correlationId = this.getRequestCorrelationId(request);
       this.logger.trace("1n9lbl", correlationId);
-      if (!this.platformAuthProvider) {
-        this.logger.trace("0vnu11", correlationId);
-        return false;
-      }
-      if (!isPlatformAuthAllowed(this.config, this.logger, correlationId, this.platformAuthProvider, request.authenticationScheme)) {
+      const platformAuthAllowed = isPlatformAuthAllowed(this.config, this.logger, correlationId, this.platformAuthProvider, request.authenticationScheme, this.performanceClient);
+      if (!platformAuthAllowed) {
         this.logger.trace("0yoy1g", correlationId);
         return false;
       }
@@ -14310,23 +14738,23 @@
      * @returns
      */
     async acquireTokenSilentDeduped(request, account, correlationId) {
-      const thumbprint = getRequestThumbprint(this.config.auth.clientId, {
-        ...request,
-        authority: request.authority || this.config.auth.authority,
-        correlationId
-      }, account.homeAccountId);
-      const silentRequestKey = JSON.stringify(thumbprint);
-      const inProgressRequest = this.activeSilentTokenRequests.get(silentRequestKey);
+      const preparedRequest = resolveSilentRequestPreparation({
+        request,
+        account,
+        correlationId,
+        config: this.config
+      }, this.platformAuthProvider, this.logger, this.performanceClient);
+      const inProgressRequest = this.activeSilentTokenRequests.get(preparedRequest.key);
       if (typeof inProgressRequest === "undefined") {
         this.logger.verbose("0fcjbk", correlationId);
         this.performanceClient.addFields({ deduped: false }, correlationId);
         const activeRequest = invokeAsync(this.acquireTokenSilentAsync.bind(this), AcquireTokenSilentAsync, this.logger, this.performanceClient, correlationId)({
-          ...request,
+          ...preparedRequest.request,
           correlationId
-        }, account);
-        this.activeSilentTokenRequests.set(silentRequestKey, activeRequest);
+        }, preparedRequest.account);
+        this.activeSilentTokenRequests.set(preparedRequest.key, activeRequest);
         return activeRequest.finally(() => {
-          this.activeSilentTokenRequests.delete(silentRequestKey);
+          this.activeSilentTokenRequests.delete(preparedRequest.key);
         });
       } else {
         this.logger.verbose("1yq7nb", correlationId);
@@ -14422,7 +14850,7 @@
      * @returns
      */
     async acquireTokenSilentNoIframe(silentRequest, cacheLookupPolicy) {
-      if (isPlatformAuthAllowed(this.config, this.logger, silentRequest.correlationId, this.platformAuthProvider, silentRequest.authenticationScheme) && silentRequest.account.nativeAccountId) {
+      if (isPlatformAuthAllowed(this.config, this.logger, silentRequest.correlationId, this.platformAuthProvider, silentRequest.authenticationScheme, this.performanceClient) && silentRequest.account.nativeAccountId) {
         this.logger.verbose("0sczo4", silentRequest.correlationId);
         this.performanceClient.addFields({ isPlatformBrokerRequest: true }, silentRequest.correlationId);
         return this.acquireTokenNative(silentRequest, ApiId.acquireTokenSilent_silentFlow, silentRequest.account.nativeAccountId, cacheLookupPolicy).catch(async (e) => {
@@ -16139,7 +16567,7 @@
 @azure/msal-common/dist-browser/network/INetworkModule.mjs:
 @azure/msal-common/dist-browser/request/BaseAuthRequest.mjs:
 @azure/msal-common/dist-browser/index-browser.mjs:
-  (*! @azure/msal-common v16.14.0 2026-08-28 *)
+  (*! @azure/msal-common v16.14.2 2026-10-02 *)
 
 @azure/msal-browser/dist/telemetry/BrowserPerformanceEvents.mjs:
 @azure/msal-browser/dist/error/BrowserAuthError.mjs:
@@ -16177,6 +16605,7 @@
 @azure/msal-browser/dist/utils/BrowserProtocolUtils.mjs:
 @azure/msal-browser/dist/response/ResponseHandler.mjs:
 @azure/msal-browser/dist/interaction_handler/InteractionHandler.mjs:
+@azure/msal-browser/dist/broker/nativeBroker/PlatformAuthRequest.mjs:
 @azure/msal-browser/dist/error/NativeAuthErrorCodes.mjs:
 @azure/msal-browser/dist/broker/nativeBroker/NativeStatusCodes.mjs:
 @azure/msal-browser/dist/error/NativeAuthError.mjs:
@@ -16198,6 +16627,7 @@
 @azure/msal-browser/dist/interaction_client/HybridSpaAuthorizationCodeClient.mjs:
 @azure/msal-browser/dist/interaction_client/SilentAuthCodeClient.mjs:
 @azure/msal-browser/dist/utils/MsalFrameStatsUtils.mjs:
+@azure/msal-browser/dist/request/SilentRequestHelpers.mjs:
 @azure/msal-browser/dist/controllers/StandardController.mjs:
 @azure/msal-browser/dist/operatingcontext/BaseOperatingContext.mjs:
 @azure/msal-browser/dist/operatingcontext/StandardOperatingContext.mjs:
@@ -16213,5 +16643,5 @@
 @azure/msal-browser/dist/operatingcontext/NestedAppOperatingContext.mjs:
 @azure/msal-browser/dist/app/PublicClientApplication.mjs:
 @azure/msal-browser/dist/index.mjs:
-  (*! @azure/msal-browser v5.21.0 2026-09-02 *)
+  (*! @azure/msal-browser v5.25.1 2026-10-13 *)
 */
