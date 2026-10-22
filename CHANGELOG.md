@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.4
+
+- Updated `@azure/msal-browser` to 5.25.1, `express-rate-limit` to 8.7.1, `grapesjs` to 0.23.8, `jose` to 6.2.12, and the `office-addin-manifest` development dependency to 3.0.1 (Dependabot).
+- Rebuilt the Outlook add-in bundles against the updated `@azure/msal-browser`.
+- Updated the transitive `fast-uri` dependency to 3.1.9 for GHSA-hrr3-gc8f-f4qj.
+
 ## 2.1.3
 
 - Updated the transitive `source-map-js` development dependency (Dependabot).
