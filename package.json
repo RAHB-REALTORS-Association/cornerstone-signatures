@@ -1,6 +1,6 @@
 {
   "name": "cornerstone-signatures",
-  "version": "2.1.5",
+  "version": "2.1.6",
   "description": "Self-hosted Microsoft 365 email signature management",
   "license": "AGPL-3.0-only",
   "private": true,
@@ -17,12 +17,12 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@azure/msal-browser": "5.25.1",
+    "@azure/msal-browser": "5.26.0",
     "express": "5.3.0",
     "express-rate-limit": "8.7.1",
     "grapesjs": "0.23.8",
     "grapesjs-mjml": "1.0.8",
-    "jose": "6.2.12",
+    "jose": "6.2.13",
     "mjml": "5.4.1"
   },
   "devDependencies": {

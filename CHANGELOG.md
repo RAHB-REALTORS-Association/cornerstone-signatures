@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.6
+
+- Updated `@azure/msal-browser` to 5.26.0 and `jose` to 6.2.13, and rebuilt the Outlook add-in bundles.
+- Patched compatible transitive `body-parser`, `ip-address`, and `undici` dependencies identified by the dependency audit.
+- Updated the production container and release tooling to Node.js 26. CI checks both the minimum supported Node.js 24 runtime and Node.js 26.
+- Updated the Pages artifact upload action to v5 and grouped future weekly Dependabot updates by ecosystem, with separate security update groups for npm and GitHub Actions.
+
 ## 2.1.5
 
 - Updated `express` to 5.3.0 (Dependabot).
