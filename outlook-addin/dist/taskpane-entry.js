@@ -3402,7 +3402,7 @@
 
   // node_modules/@azure/msal-common/dist-browser/packageMetadata.mjs
   var name = "@azure/msal-common";
-  var version = "16.14.2";
+  var version = "16.14.3";
 
   // node_modules/@azure/msal-common/dist-browser/error/CacheErrorCodes.mjs
   var CacheErrorCodes_exports = {};
@@ -8488,7 +8488,7 @@
 
   // node_modules/@azure/msal-browser/dist/packageMetadata.mjs
   var name2 = "@azure/msal-browser";
-  var version2 = "5.25.1";
+  var version2 = "5.26.0";
 
   // node_modules/@azure/msal-browser/dist/utils/Helpers.mjs
   function removeElementFromArray(array, element) {
@@ -10263,6 +10263,33 @@
       validatedRequest.account = account;
     }
     return validatedRequest;
+  }
+
+  // node_modules/@azure/msal-browser/dist/utils/BrowserDetection.mjs
+  function isSafari(userAgent = typeof navigator !== "undefined" ? navigator.userAgent : "") {
+    var _a, _b;
+    if (/OPR\/|OPiOS|PhantomJS|SamsungBrowser|Edge|EdgiOS|EdgA/.test(userAgent)) {
+      return false;
+    }
+    const browserNavigator = typeof navigator !== "undefined" ? navigator : void 0;
+    if (/Edg/.test(userAgent) || ((_b = (_a = browserNavigator == null ? void 0 : browserNavigator.userAgentData) == null ? void 0 : _a.brands) == null ? void 0 : _b.some((brand) => (brand == null ? void 0 : brand.brand) === "Microsoft Edge"))) {
+      return false;
+    }
+    if (/Electron|CriOS|Chrome|Trident|FxiOS|Firefox/.test(userAgent)) {
+      return false;
+    }
+    return /Safari/.test(userAgent) || /AppleWebKit/.test(userAgent);
+  }
+  function shouldUseEar(protocolMode, logger, performanceClient, correlationId, userAgent) {
+    if (protocolMode !== ProtocolMode.EAR) {
+      return false;
+    }
+    if (!isSafari(userAgent)) {
+      return true;
+    }
+    logger.verbose("0wirye", correlationId);
+    performanceClient.addFields({ "ext.earFallbackReason": "safari" }, correlationId);
+    return false;
   }
 
   // node_modules/@azure/msal-browser/dist/popup_relay/constants.mjs
@@ -12427,7 +12454,7 @@
       }
       const isPlatformBroker = isPlatformAuthAllowed(this.config, this.logger, this.correlationId, this.platformAuthProvider, request.authenticationScheme);
       validRequest.platformBroker = isPlatformBroker;
-      if (this.config.system.protocolMode === ProtocolMode.EAR) {
+      if (shouldUseEar(this.config.system.protocolMode, this.logger, this.performanceClient, this.correlationId)) {
         return this.executeEarFlow(validRequest, popupParams, pkceCodes);
       } else {
         return this.executeCodeFlow(validRequest, popupParams, pkceCodes);
@@ -12787,7 +12814,7 @@
       this.browserStorage.setTemporaryCache(TemporaryCacheKeys.ORIGIN_URI, redirectStartPage, true);
       window.addEventListener("pageshow", handleBackButton);
       try {
-        const redirectOperation = this.config.system.protocolMode === ProtocolMode.EAR ? this.executeEarFlow(validRequest) : this.executeCodeFlow(validRequest);
+        const redirectOperation = shouldUseEar(this.config.system.protocolMode, this.logger, this.performanceClient, this.correlationId) ? this.executeEarFlow(validRequest) : this.executeCodeFlow(validRequest);
         await Promise.race([redirectOperation, backButtonCancellation]);
       } catch (e) {
         if (e instanceof AuthError) {
@@ -13200,7 +13227,7 @@
       const silentRequest = await invokeAsync(initializeAuthorizationRequest, StandardInteractionClientInitializeAuthorizationRequest, this.logger, this.performanceClient, this.correlationId)(inputRequest, InteractionType.Silent, this.config, this.browserCrypto, this.browserStorage, this.logger, this.performanceClient, this.correlationId);
       silentRequest.platformBroker = isPlatformAuthAllowed(this.config, this.logger, this.correlationId, this.platformAuthProvider, silentRequest.authenticationScheme);
       preconnect(silentRequest.authority);
-      if (this.config.system.protocolMode === ProtocolMode.EAR) {
+      if (shouldUseEar(this.config.system.protocolMode, this.logger, this.performanceClient, this.correlationId)) {
         return this.executeEarFlow(silentRequest);
       } else {
         return this.executeCodeFlow(silentRequest);
@@ -13525,13 +13552,20 @@
     return prepareRequest(input);
   }
   function prepareWebSilentRequest({ request, account, correlationId, config }) {
+    var _a;
     const thumbprint = getRequestThumbprint(config.auth.clientId, {
       ...request,
       authority: request.authority || config.auth.authority,
       correlationId
     }, account.homeAccountId);
     return {
-      key: JSON.stringify(thumbprint),
+      key: JSON.stringify({
+        ...thumbprint,
+        forceRefresh: !!request.forceRefresh,
+        cacheLookupPolicy: (_a = request.cacheLookupPolicy) != null ? _a : CacheLookupPolicy.Default,
+        extraParameters: canonicalizeStringDict(request.extraParameters),
+        extraQueryParameters: canonicalizeStringDict(request.extraQueryParameters)
+      }),
       request,
       account
     };
@@ -15387,7 +15421,10 @@
       const correlationId = validRequest.correlationId || createNewGuid();
       this.eventHandler.emitEvent(EventType.ACQUIRE_TOKEN_START, correlationId, InteractionType.Popup, validRequest);
       const atPopupMeasurement = this.performanceClient.startMeasurement(AcquireTokenPopup, correlationId);
-      atPopupMeasurement.add({ nestedAppAuthRequest: true });
+      atPopupMeasurement.add({
+        nestedAppAuthRequest: true,
+        bridgeType: "NAA"
+      });
       try {
         enforceResourceParameter(this.config.auth.isMcp, validRequest);
         const naaRequest = this.nestedAppAuthAdapter.toNaaTokenRequest(validRequest);
@@ -15444,7 +15481,8 @@
         visibilityChangeCount: 0
       });
       ssoSilentMeasurement.add({
-        nestedAppAuthRequest: true
+        nestedAppAuthRequest: true,
+        bridgeType: "NAA"
       });
       try {
         enforceResourceParameter(this.config.auth.isMcp, validRequest);
@@ -15491,7 +15529,8 @@
       const correlationId = request.correlationId || createNewGuid();
       const atsMeasurement = this.performanceClient.startMeasurement(AcquireTokenSilent, correlationId);
       atsMeasurement == null ? void 0 : atsMeasurement.add({
-        nestedAppAuthRequest: true
+        nestedAppAuthRequest: true,
+        bridgeType: "NAA"
       });
       if (request.claims) {
         this.logger.verbose("11t57w", correlationId);
@@ -16567,7 +16606,7 @@
 @azure/msal-common/dist-browser/network/INetworkModule.mjs:
 @azure/msal-common/dist-browser/request/BaseAuthRequest.mjs:
 @azure/msal-common/dist-browser/index-browser.mjs:
-  (*! @azure/msal-common v16.14.2 2026-10-02 *)
+  (*! @azure/msal-common v16.14.3 2026-10-21 *)
 
 @azure/msal-browser/dist/telemetry/BrowserPerformanceEvents.mjs:
 @azure/msal-browser/dist/error/BrowserAuthError.mjs:
@@ -16600,6 +16639,7 @@
 @azure/msal-browser/dist/interaction_client/BaseInteractionClient.mjs:
 @azure/msal-browser/dist/request/RequestHelpers.mjs:
 @azure/msal-browser/dist/interaction_client/StandardInteractionClient.mjs:
+@azure/msal-browser/dist/utils/BrowserDetection.mjs:
 @azure/msal-browser/dist/popup_relay/constants.mjs:
 @azure/msal-browser/dist/popup_relay/relayClient.mjs:
 @azure/msal-browser/dist/utils/BrowserProtocolUtils.mjs:
@@ -16643,5 +16683,5 @@
 @azure/msal-browser/dist/operatingcontext/NestedAppOperatingContext.mjs:
 @azure/msal-browser/dist/app/PublicClientApplication.mjs:
 @azure/msal-browser/dist/index.mjs:
-  (*! @azure/msal-browser v5.25.1 2026-10-13 *)
+  (*! @azure/msal-browser v5.26.0 2026-10-21 *)
 */

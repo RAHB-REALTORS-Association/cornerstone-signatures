@@ -103,7 +103,7 @@ Deleting a managed record is temporary if it still matches the filters—it retu
 ## Requirements
 
 - Node.js 24 or later
-- Docker or another Node 24 deployment environment
+- Docker (Node.js 26 image) or another Node.js 24+ deployment environment
 - A persistent filesystem mount at `/app/data`
 - A public HTTPS origin
 - Cloudflare Access for the browser picker and administration interface
@@ -132,12 +132,12 @@ The development command authenticates as the example bootstrap administrator. Yo
 Fill in `.env` from [.env.example](.env.example), then build and run the container:
 
 ```sh
-docker build -t cornerstone-signatures:2.1.5 .
+docker build -t cornerstone-signatures:2.1.6 .
 
 docker run --env-file .env \
   -p 3000:3000 \
   -v cornerstone-signatures-data:/app/data \
-  cornerstone-signatures:2.1.5
+  cornerstone-signatures:2.1.6
 ```
 
 The health endpoint is:
