@@ -22,7 +22,7 @@
     "express-rate-limit": "8.7.1",
     "grapesjs": "0.23.8",
     "grapesjs-mjml": "1.0.8",
-    "jose": "6.2.12",
+    "jose": "6.2.13",
     "mjml": "5.4.1"
   },
   "devDependencies": {
