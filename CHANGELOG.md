@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.7
+
+- Fixed dashboard analytics card spacing so the From-address chart stays near its heading instead of being pushed down by the Outlook client details.
+- Limited the platform/version detail list to a keyboard-scrollable area and adapted chart legends to narrow cards.
+- Used compact notation for dashboard and chart totals of 10,000 or more, preserving exact counts in tooltips and accessible labels.
+- Updated `@azure/msal-browser` to 5.27.0, `express-rate-limit` to 8.7.2, and `jose` to 6.2.14, and rebuilt the committed Outlook add-in bundles.
+
 ## 2.1.6
 
 - Updated `@azure/msal-browser` to 5.26.0 and `jose` to 6.2.13, and rebuilt the Outlook add-in bundles.

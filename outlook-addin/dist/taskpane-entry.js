@@ -45,6 +45,7 @@
     NONCE: () => NONCE,
     OBO_ASSERTION: () => OBO_ASSERTION,
     ON_BEHALF_OF: () => ON_BEHALF_OF,
+    POPUP_ORIGIN_CHECK_DONE: () => POPUP_ORIGIN_CHECK_DONE,
     POST_LOGOUT_URI: () => POST_LOGOUT_URI,
     PROMPT: () => PROMPT,
     REDIRECT_URI: () => REDIRECT_URI,
@@ -141,6 +142,7 @@
   var USER_ID = "user_id";
   var FMI_PATH = "fmi_path";
   var ATTRIBUTE_TOKENS = "attribute_tokens";
+  var POPUP_ORIGIN_CHECK_DONE = "pocd";
 
   // node_modules/@azure/msal-common/dist-browser/cache/utils/AccountEntityUtils.mjs
   var AccountEntityUtils_exports = {};
@@ -889,6 +891,31 @@
   };
   function createClientConfigurationError(errorCode, correlationId) {
     return new ClientConfigurationError(errorCode, correlationId);
+  }
+
+  // node_modules/@azure/msal-common/dist-browser/network/ResponseHeaders.mjs
+  var normalizedHeaderRecords = /* @__PURE__ */ new WeakSet();
+  function normalizeResponseHeaders(headers) {
+    if (normalizedHeaderRecords.has(headers)) {
+      return headers;
+    }
+    const normalized = Object.fromEntries(Object.entries(headers).map(([name3, value]) => [
+      name3.toLowerCase(),
+      value
+    ]));
+    normalizedHeaderRecords.add(normalized);
+    return normalized;
+  }
+  function getResponseHeader(headers, name3) {
+    const key = name3.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(headers, key)) {
+      return headers[key];
+    }
+    if (normalizedHeaderRecords.has(headers)) {
+      return void 0;
+    }
+    const headerName = Object.keys(headers).find((header) => header.toLowerCase() === key);
+    return headerName === void 0 ? void 0 : headers[headerName];
   }
 
   // node_modules/@azure/msal-common/dist-browser/error/ClientConfigurationErrorCodes.mjs
@@ -2593,6 +2620,7 @@
     addOboAssertion: () => addOboAssertion,
     addPassword: () => addPassword,
     addPopToken: () => addPopToken,
+    addPopupOriginCheckDone: () => addPopupOriginCheckDone,
     addPostLogoutRedirectUri: () => addPostLogoutRedirectUri,
     addPrompt: () => addPrompt,
     addRedirectUri: () => addRedirectUri,
@@ -2929,6 +2957,11 @@
       parameters.set(INSTANCE_AWARE, "true");
     }
   }
+  function addPopupOriginCheckDone(parameters) {
+    if (!parameters.has(POPUP_ORIGIN_CHECK_DONE)) {
+      parameters.set(POPUP_ORIGIN_CHECK_DONE, "1");
+    }
+  }
   function addExtraParameters(parameters, extraParams) {
     Object.entries(extraParams).forEach(([key, value]) => {
       if (!parameters.has(key) && value) {
@@ -3072,6 +3105,9 @@
     }
     try {
       const normalizedResponse = stripLeadingHashOrQuery(responseString);
+      if (!/^[^=&?#/]+(?:=|&|$)/.test(normalizedResponse)) {
+        return null;
+      }
       const deserializedHash = Object.fromEntries(new URLSearchParams(normalizedResponse));
       if (deserializedHash.code || deserializedHash.ear_jwe || deserializedHash.error || deserializedHash.error_description || deserializedHash.state) {
         return deserializedHash;
@@ -3402,7 +3438,7 @@
 
   // node_modules/@azure/msal-common/dist-browser/packageMetadata.mjs
   var name = "@azure/msal-common";
-  var version = "16.14.3";
+  var version = "16.15.0";
 
   // node_modules/@azure/msal-common/dist-browser/error/CacheErrorCodes.mjs
   var CacheErrorCodes_exports = {};
@@ -5460,12 +5496,13 @@
      * Performs necessary throttling checks after a network request.
      * @param cacheManager
      * @param thumbprint
-     * @param response
+     * @param response - Token response with case-insensitive header names.
      */
     static postProcess(cacheManager, thumbprint, response, correlationId) {
-      if (_ThrottlingUtils.checkResponseStatus(response) || _ThrottlingUtils.checkResponseForRetryAfter(response)) {
+      const retryAfter = getRetryAfterHeader(response);
+      if (_ThrottlingUtils.checkResponseStatus(response) || retryAfter !== void 0) {
         const thumbprintValue = {
-          throttleTime: _ThrottlingUtils.calculateThrottleTime(parseInt(response.headers[HeaderNames.RETRY_AFTER])),
+          throttleTime: _ThrottlingUtils.calculateThrottleTime(parseInt(retryAfter || "")),
           error: response.body.error,
           errorCodes: response.body.error_codes,
           errorMessage: response.body.error_description,
@@ -5483,13 +5520,10 @@
     }
     /**
      * Checks a NetworkResponse object's RetryAfter header
-     * @param response
+     * @param response - Token response with case-insensitive header names.
      */
     static checkResponseForRetryAfter(response) {
-      if (response.headers) {
-        return response.headers.hasOwnProperty(HeaderNames.RETRY_AFTER) && (response.status < 200 || response.status >= 300);
-      }
-      return false;
+      return getRetryAfterHeader(response) !== void 0;
     }
     /**
      * Calculates the Unix-time value for a throttle to expire given throttleTime in seconds.
@@ -5506,6 +5540,12 @@
       cacheManager.removeItem(key, request.correlationId);
     }
   };
+  function getRetryAfterHeader(response) {
+    if ((response.status < 200 || response.status >= 300) && response.headers) {
+      return getResponseHeader(response.headers, HeaderNames.RETRY_AFTER);
+    }
+    return void 0;
+  }
 
   // node_modules/@azure/msal-common/dist-browser/error/NetworkError.mjs
   var NetworkError = class _NetworkError extends AuthError {
@@ -5582,7 +5622,8 @@
     let response;
     try {
       response = await invokeAsync(networkClient.sendPostRequestAsync.bind(networkClient), NetworkClientSendPostRequestAsync, logger, performanceClient, correlationId)(tokenEndpoint, { ...options, correlationId, performanceClient });
-      const responseHeaders = response.headers || {};
+      const responseHeaders = normalizeResponseHeaders(response.headers || {});
+      response = { ...response, headers: responseHeaders };
       performanceClient == null ? void 0 : performanceClient.addFields({
         refreshTokenSize: ((_a = response.body.refresh_token) == null ? void 0 : _a.length) || 0,
         httpVerToken: responseHeaders[HeaderNames.X_MS_HTTP_VERSION] || "",
@@ -5590,13 +5631,13 @@
       }, correlationId);
     } catch (e) {
       if (e instanceof NetworkError) {
-        const responseHeaders = e.responseHeaders;
+        const responseHeaders = e.responseHeaders ? normalizeResponseHeaders(e.responseHeaders) : void 0;
         if (responseHeaders) {
           performanceClient == null ? void 0 : performanceClient.addFields({
             httpVerToken: responseHeaders[HeaderNames.X_MS_HTTP_VERSION] || "",
             requestId: responseHeaders[HeaderNames.X_MS_REQUEST_ID] || "",
-            contentTypeHeader: responseHeaders[HeaderNames.CONTENT_TYPE] || void 0,
-            contentLengthHeader: responseHeaders[HeaderNames.CONTENT_LENGTH] || void 0,
+            contentTypeHeader: getResponseHeader(responseHeaders, HeaderNames.CONTENT_TYPE) || void 0,
+            contentLengthHeader: getResponseHeader(responseHeaders, HeaderNames.CONTENT_LENGTH) || void 0,
             httpStatus: e.httpStatus
           }, correlationId);
         }
@@ -5810,6 +5851,9 @@
       if (request.logoutHint) {
         addLogoutHint(parameters, request.logoutHint);
       }
+      if (request.popupOriginCheckDone) {
+        addPopupOriginCheckDone(parameters);
+      }
       if (request.extraQueryParameters) {
         addExtraParameters(parameters, request.extraQueryParameters);
       }
@@ -5931,6 +5975,9 @@
     addClaims(parameters, request.correlationId, request.claims, authOptions.clientCapabilities, request.skipBrokerClaims);
     if (authOptions.instanceAware && (!request.extraQueryParameters || !Object.keys(request.extraQueryParameters).includes(INSTANCE_AWARE))) {
       addInstanceAware(parameters);
+    }
+    if (request.popupOriginCheckDone) {
+      addPopupOriginCheckDone(parameters);
     }
     return parameters;
   }
@@ -7201,9 +7248,19 @@
     };
   }
   function clearHash(contentWindow) {
+    const serverParams = UrlUtils_exports.getDeserializedResponse(contentWindow.location.hash);
+    if (!serverParams) {
+      return;
+    }
     contentWindow.location.hash = "";
     if (typeof contentWindow.history.replaceState === "function") {
       contentWindow.history.replaceState(null, "", `${contentWindow.location.origin}${contentWindow.location.pathname}${contentWindow.location.search}`);
+    }
+  }
+  function clearAuthResponseFromUrl(contentWindow) {
+    var _a;
+    if (typeof ((_a = contentWindow.history) == null ? void 0 : _a.replaceState) === "function") {
+      contentWindow.history.replaceState(null, "", `${contentWindow.location.origin}${contentWindow.location.pathname}`);
     }
   }
   function replaceHash(url) {
@@ -8488,7 +8545,7 @@
 
   // node_modules/@azure/msal-browser/dist/packageMetadata.mjs
   var name2 = "@azure/msal-browser";
-  var version2 = "5.26.0";
+  var version2 = "5.27.0";
 
   // node_modules/@azure/msal-browser/dist/utils/Helpers.mjs
   function removeElementFromArray(array, element) {
@@ -9825,6 +9882,73 @@
     return browserStorage.getActiveAccount(correlationId);
   }
 
+  // node_modules/@azure/msal-browser/dist/utils/PopupMonitor.mjs
+  var POPUP_POLL_INTERVAL_MS = 30;
+  var activePopupPoller;
+  function cancelPendingPopupPollingResponse(logger) {
+    if (activePopupPoller) {
+      logger.verbose("0g9n3p", activePopupPoller.correlationId);
+      activePopupPoller.cancel();
+    }
+  }
+  async function monitorPopupForHash(popupWindow, popupWindowParent, responseMode, logger, unloadWindow, correlationId) {
+    let poller;
+    return new Promise((resolve, reject) => {
+      logger.verbose("0cp91u", correlationId);
+      const intervalId = window.setInterval(() => {
+        if (popupWindow.closed) {
+          logger.error("0n69wb", correlationId);
+          window.clearInterval(intervalId);
+          reject(new BrowserAuthError(userCancelled, correlationId));
+          return;
+        }
+        let href = "";
+        try {
+          href = popupWindow.location.href;
+        } catch (e) {
+        }
+        if (!href || href === "about:blank") {
+          return;
+        }
+        window.clearInterval(intervalId);
+        let responseString;
+        if (responseMode === Constants_exports.ResponseMode.QUERY) {
+          responseString = popupWindow.location.search;
+        } else {
+          responseString = popupWindow.location.hash;
+        }
+        logger.verbose("0po9er", correlationId);
+        resolve(responseString);
+      }, POPUP_POLL_INTERVAL_MS);
+      poller = {
+        correlationId,
+        cancel: () => {
+          window.clearInterval(intervalId);
+          if (activePopupPoller === poller) {
+            activePopupPoller = void 0;
+          }
+          reject(new BrowserAuthError(interactionInProgressCancelled, correlationId));
+        }
+      };
+      activePopupPoller = poller;
+    }).finally(() => {
+      if (poller && activePopupPoller === poller) {
+        activePopupPoller = void 0;
+      }
+      cleanPopup(popupWindow, popupWindowParent, unloadWindow);
+    });
+  }
+  function cleanPopup(popupWindow, popupWindowParent, unloadWindow) {
+    if (!popupWindow.closed) {
+      try {
+        clearAuthResponseFromUrl(popupWindow);
+      } catch {
+      }
+    }
+    popupWindow.close();
+    popupWindowParent.removeEventListener("beforeunload", unloadWindow);
+  }
+
   // node_modules/@azure/msal-browser/dist/event/EventHandler.mjs
   var BROADCAST_CHANNEL_NAME2 = "msal.broadcast.event";
   var EventHandler = class {
@@ -10104,6 +10228,49 @@
     return httpMethod;
   }
 
+  // node_modules/@azure/msal-browser/dist/utils/PopupOriginCheck.mjs
+  var OPAQUE_ORIGIN = "null";
+  function allAncestorsSameOrigin(win) {
+    try {
+      if (win.origin === OPAQUE_ORIGIN) {
+        return false;
+      }
+      let current = win;
+      while (current !== current.parent) {
+        current = current.parent;
+        void current.location.href;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  function topOpenerIsSameOriginOrAbsent(win) {
+    try {
+      const top = win.top;
+      if (!top) {
+        return false;
+      }
+      const opener = top.opener;
+      if (!opener || opener === top) {
+        return true;
+      }
+      void opener.location.href;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  function computePocd(config, win = typeof window !== "undefined" ? window : void 0) {
+    if (config.auth.originCheck === false) {
+      return 1;
+    }
+    if (!win || !allAncestorsSameOrigin(win)) {
+      return 0;
+    }
+    return topOpenerIsSameOriginOrAbsent(win) ? 1 : 0;
+  }
+
   // node_modules/@azure/msal-browser/dist/interaction_client/StandardInteractionClient.mjs
   var StandardInteractionClient = class extends BaseInteractionClient {
     /**
@@ -10114,7 +10281,12 @@
       this.logger.verbose("0546u4", this.correlationId);
       const validLogoutRequest = {
         correlationId: this.correlationId,
-        ...logoutRequest
+        ...logoutRequest,
+        /*
+         * Computed here rather than per flow so every end-session request
+         * carries it, matching the authorize path.
+         */
+        popupOriginCheckDone: computePocd(this.config) === 1
       };
       if (logoutRequest) {
         if (!logoutRequest.logoutHint) {
@@ -11306,7 +11478,17 @@
     (parsed == null ? void 0 : parsed.subError) && performanceClient.addFields({ serverSubErrorNo: parsed.subError }, correlationId);
   }
   async function getStandardParameters(config, authority, request, logger, performanceClient) {
-    const parameters = Authorize_exports.getStandardAuthorizeRequestParameters({ ...config.auth, authority }, request, logger, performanceClient);
+    var _a;
+    const parameters = Authorize_exports.getStandardAuthorizeRequestParameters({ ...config.auth, authority }, {
+      ...request,
+      /*
+       * Computed here rather than per flow so every authorize request
+       * carries it — GET, POST and EAR, interactive and silent alike.
+       * A request may assert it instead when the topology, rather than
+       * the current window, is what makes the popup unreachable.
+       */
+      popupOriginCheckDone: (_a = request.popupOriginCheckDone) != null ? _a : computePocd(config) === 1
+    }, logger, performanceClient);
     RequestParameterBuilder_exports.addLibraryInfo(parameters, {
       sku: BrowserConstants.MSAL_SKU,
       version: version2,
@@ -11344,6 +11526,15 @@
     });
     return Authorize_exports.getAuthorizeUrl(authority, parameters);
   }
+  function getAuthorizeFormAction(authority, request, parameters) {
+    const queryParams = /* @__PURE__ */ new Map();
+    RequestParameterBuilder_exports.addExtraParameters(queryParams, request.extraQueryParameters || {});
+    if (parameters.has(AADServerParamKeys_exports.POPUP_ORIGIN_CHECK_DONE)) {
+      queryParams.delete(AADServerParamKeys_exports.POPUP_ORIGIN_CHECK_DONE);
+    }
+    RequestParameterBuilder_exports.addCorrelationId(queryParams, request.correlationId);
+    return Authorize_exports.getAuthorizeUrl(authority, queryParams);
+  }
   async function getEARFormData(config, authority, request, logger, performanceClient) {
     if (!request.earJwk) {
       throw createBrowserAuthError(earJwkEmpty, request.correlationId);
@@ -11355,10 +11546,7 @@
     RequestParameterBuilder_exports.addExtraParameters(parameters, {
       ...request.extraParameters
     });
-    const queryParams = /* @__PURE__ */ new Map();
-    RequestParameterBuilder_exports.addExtraParameters(queryParams, request.extraQueryParameters || {});
-    RequestParameterBuilder_exports.addCorrelationId(queryParams, request.correlationId);
-    const action = Authorize_exports.getAuthorizeUrl(authority, queryParams);
+    const action = getAuthorizeFormAction(authority, request, parameters);
     return { action, fields: Object.fromEntries(parameters) };
   }
   async function getEARForm(frame, config, authority, request, logger, performanceClient) {
@@ -11372,10 +11560,7 @@
     RequestParameterBuilder_exports.addExtraParameters(parameters, {
       ...request.extraParameters
     });
-    const queryParams = /* @__PURE__ */ new Map();
-    RequestParameterBuilder_exports.addExtraParameters(queryParams, request.extraQueryParameters || {});
-    RequestParameterBuilder_exports.addCorrelationId(queryParams, request.correlationId);
-    const action = Authorize_exports.getAuthorizeUrl(authority, queryParams);
+    const action = getAuthorizeFormAction(authority, request, parameters);
     return { action, fields: Object.fromEntries(parameters) };
   }
   async function getCodeForm(frame, config, authority, request, logger, performanceClient) {
@@ -11642,6 +11827,7 @@
   var DEFAULT_REDIRECT_TIMEOUT_MS = 3e4;
   var DEFAULT_NATIVE_BROKER_HANDSHAKE_TIMEOUT_MS = 2e3;
   function buildConfiguration({ auth: userInputAuth, cache: userInputCache, system: userInputSystem, experimental: userInputExperimental, telemetry: userInputTelemetry }, isBrowserEnvironment) {
+    var _a;
     const DEFAULT_AUTH_OPTIONS = {
       clientId: "",
       authority: `${Constants_exports.DEFAULT_AUTHORITY}`,
@@ -11666,7 +11852,9 @@
       },
       instanceAware: false,
       isMcp: false,
-      verifySSO: false
+      verifySSO: false,
+      // Legacy polling needs COOP omitted, so it implies asserting pocd=1.
+      originCheck: !(userInputSystem == null ? void 0 : userInputSystem.enableLegacyPolling)
     };
     const DEFAULT_CACHE_OPTIONS = {
       cacheLocation: BrowserCacheLocation.SessionStorage,
@@ -11692,7 +11880,8 @@
       allowPlatformBroker: false,
       nativeBrokerHandshakeTimeout: (userInputSystem == null ? void 0 : userInputSystem.nativeBrokerHandshakeTimeout) || DEFAULT_NATIVE_BROKER_HANDSHAKE_TIMEOUT_MS,
       protocolMode: ProtocolMode.AAD,
-      serverTelemetryEnabled: false
+      serverTelemetryEnabled: false,
+      enableLegacyPolling: false
     };
     const providedSystemOptions = {
       ...DEFAULT_BROWSER_SYSTEM_OPTIONS,
@@ -11710,12 +11899,24 @@
       iframeTimeoutTelemetry: false,
       allowPlatformBrokerWithDOM: false
     };
+    let logger;
+    const getLogger = () => {
+      if (!logger) {
+        logger = new Logger(providedSystemOptions.loggerOptions, name2, version2);
+      }
+      return logger;
+    };
     if ((userInputSystem == null ? void 0 : userInputSystem.protocolMode) !== ProtocolMode.OIDC && (userInputAuth == null ? void 0 : userInputAuth.OIDCOptions)) {
-      const logger = new Logger(providedSystemOptions.loggerOptions, name2, version2);
-      logger.warning(JSON.stringify(createClientConfigurationError(ClientConfigurationErrorCodes_exports.cannotSetOIDCOptions, "")), "");
+      getLogger().warning(JSON.stringify(createClientConfigurationError(ClientConfigurationErrorCodes_exports.cannotSetOIDCOptions, "")), "");
     }
     if ((userInputSystem == null ? void 0 : userInputSystem.protocolMode) && userInputSystem.protocolMode === ProtocolMode.OIDC && (providedSystemOptions == null ? void 0 : providedSystemOptions.allowPlatformBroker)) {
       throw createClientConfigurationError(ClientConfigurationErrorCodes_exports.cannotAllowPlatformBroker, "");
+    }
+    if ((userInputSystem == null ? void 0 : userInputSystem.enableLegacyPolling) && (userInputAuth == null ? void 0 : userInputAuth.originCheck) === true) {
+      getLogger().warning("buildConfiguration: system.enableLegacyPolling is true and auth.originCheck is explicitly true. Legacy polling requires pocd=1, which the origin check will not produce in an embedded context. Unset auth.originCheck to let legacy polling assert it.", "");
+    }
+    if (((_a = userInputAuth == null ? void 0 : userInputAuth.originCheck) != null ? _a : DEFAULT_AUTH_OPTIONS.originCheck) === false && typeof window !== "undefined" && !topOpenerIsSameOriginOrAbsent(window)) {
+      getLogger().warning("buildConfiguration: auth.originCheck is disabled and the top-level window has a cross-origin opener. MSAL will assert pocd=1, so the STS omits Cross-Origin-Opener-Policy and that opener can reach the auth popup. The application is responsible for this risk.", "");
     }
     const overlayedConfig = {
       auth: {
@@ -12415,7 +12616,7 @@
      * @param logoutRequest
      */
     logout(logoutRequest) {
-      var _a;
+      var _a, _b;
       try {
         this.logger.verbose("068rup", this.correlationId);
         const validLogoutRequest = this.initializeLogoutRequest(logoutRequest);
@@ -12424,6 +12625,7 @@
           popupWindowAttributes: (logoutRequest == null ? void 0 : logoutRequest.popupWindowAttributes) || {},
           popupWindowParent: (_a = logoutRequest == null ? void 0 : logoutRequest.popupWindowParent) != null ? _a : window
         };
+        validLogoutRequest.popupOriginCheckDone = (_b = this.getPopupOriginCheckDone(popupParams.popupWindowParent)) != null ? _b : validLogoutRequest.popupOriginCheckDone;
         const authority = logoutRequest && logoutRequest.authority;
         const mainWindowRedirectUri = logoutRequest && logoutRequest.mainWindowRedirectUri;
         if (!this.config.system.navigatePopups) {
@@ -12476,7 +12678,8 @@
       const popupRequest = {
         ...request,
         codeChallenge: pkce.challenge,
-        ...tokenBindingParams
+        ...tokenBindingParams,
+        popupOriginCheckDone: this.getPopupOriginCheckDone(popupParams.popupWindowParent)
       };
       try {
         const authClient = await invokeAsync(this.createAuthCodeClient.bind(this), StandardInteractionClientCreateAuthCodeClient, this.logger, this.performanceClient, correlationId)({
@@ -12521,7 +12724,8 @@
         ...request,
         earJwk,
         codeChallenge: pkce.challenge,
-        ...tokenBindingParams
+        ...tokenBindingParams,
+        popupOriginCheckDone: this.getPopupOriginCheckDone(popupParams.popupWindowParent)
       };
       const popupWindow = await this.openPostFormPopup(popupRequest, discoveredAuthority, popupParams, correlationId, true);
       const responseString = await invokeAsync(this.waitForPopupResponse.bind(this), SilentHandlerMonitorIframeForHash, this.logger, this.performanceClient, correlationId)(popupRequest, popupWindow, popupParams.popupWindowParent);
@@ -12738,6 +12942,26 @@
      */
     getRelayStateId(state, correlationId) {
       return ProtocolUtils_exports.parseRequestState(base64Decode, state, correlationId).libraryState.id;
+    }
+    /**
+     * Asserts `pocd=1` for the relay flow. Direct popups also require the
+     * environment of a delegated opening window to pass the origin check.
+     *
+     * With a relay the IdP window is a grandchild popup, which an untrusted
+     * ancestor cannot reach by name — so the topology satisfies the check by
+     * construction. The current window is framed and would otherwise compute
+     * `0`. Without a delegated parent, the standard app check remains unchanged.
+     *
+     * @param popupWindowParent Window that opens the popup.
+     */
+    getPopupOriginCheckDone(popupWindowParent) {
+      if (this.config.auth.popupRelayUri) {
+        return true;
+      }
+      if (popupWindowParent !== window) {
+        return computePocd(this.config) === 1 && computePocd(this.config, popupWindowParent) === 1;
+      }
+      return void 0;
     }
     /**
      * Opens the interactive popup for a POST-form /authorize request. Shared by
@@ -13001,7 +13225,6 @@
           }
           return [null, ""];
         }
-        clearHash(window);
         this.logger.verbose("00uvho", this.correlationId);
         return [response, responseString];
       }
@@ -13788,7 +14011,14 @@
      */
     async handleRedirectPromiseInternal(options) {
       var _a;
-      if (!this.browserStorage.isInteractionInProgress(true)) {
+      const responseString = (options == null ? void 0 : options.hash) || (this.config.auth.OIDCOptions.responseMode === Constants_exports.ResponseMode.QUERY ? window.location.search : window.location.hash);
+      const anyClientInteractionInProgress = this.browserStorage.isInteractionInProgress(false);
+      const currentClientInteraction = this.browserStorage.isInteractionInProgress(true);
+      const isBridgeCallback = isInPopup() || isInIframe() && !this.config.system.allowRedirectInIframe;
+      if (!isBridgeCallback && (!anyClientInteractionInProgress || currentClientInteraction)) {
+        clearHash(window);
+      }
+      if (!currentClientInteraction) {
         this.logger.info("0le6uv", "");
         return null;
       }
@@ -13796,7 +14026,7 @@
       if (interactionType === INTERACTION_TYPE.SIGNOUT) {
         this.logger.verbose("1ywcv2", "");
         this.browserStorage.setInteractionInProgress(false);
-        return Promise.resolve(null);
+        return null;
       }
       const loggedInAccounts = this.getAllAccounts();
       const platformBrokerRequest = this.browserStorage.getCachedNativeRequest();
@@ -13823,7 +14053,7 @@
           rootMeasurement = this.performanceClient.startMeasurement(AcquireTokenRedirect, correlationId);
           this.logger.trace("0znzs5", correlationId);
           const redirectClient = this.createRedirectClient(correlationId);
-          redirectResponse = invokeAsync(redirectClient.handleRedirectPromise.bind(redirectClient), HandleRedirectPromiseMeasurement, this.logger, this.performanceClient, rootMeasurement.event.correlationId)(standardRequest, codeVerifier, rootMeasurement, options);
+          redirectResponse = invokeAsync(redirectClient.handleRedirectPromise.bind(redirectClient), HandleRedirectPromiseMeasurement, this.logger, this.performanceClient, rootMeasurement.event.correlationId)(standardRequest, codeVerifier, rootMeasurement, (options == null ? void 0 : options.hash) ? options : { ...options, hash: responseString });
         }
       } catch (e) {
         this.browserStorage.resetRequestCache("");
@@ -13946,6 +14176,9 @@
         this.logger.verbose("0ch87b", correlationId);
         preflightCheck2(this.initialized, atPopupMeasurement, this.config, request);
         this.browserStorage.setInteractionInProgress(true, INTERACTION_TYPE.SIGNIN, request.overrideInteractionInProgress, correlationId);
+        if (request.overrideInteractionInProgress) {
+          cancelPendingPopupPollingResponse(this.logger);
+        }
       } catch (e) {
         return Promise.reject(e);
       }
@@ -16009,6 +16242,46 @@
   NestedAppOperatingContext.MODULE_NAME = "";
   NestedAppOperatingContext.ID = "NestedAppOperatingContext";
 
+  // node_modules/@azure/msal-browser/dist/utils/IframeMonitor.mjs
+  var IFRAME_POLL_INTERVAL_MS = 50;
+  var DEFAULT_IFRAME_TIMEOUT_MS2 = 1e4;
+  async function monitorIframeForHash(iframe, timeout, logger, correlationId, responseMode) {
+    return new Promise((resolve, reject) => {
+      if (timeout < DEFAULT_IFRAME_TIMEOUT_MS2) {
+        logger.warning(`137tec ${timeout} ${DEFAULT_IFRAME_TIMEOUT_MS2}`, correlationId);
+      }
+      const timeoutId = window.setTimeout(() => {
+        window.clearInterval(intervalId);
+        reject(new AuthError(timedOut, correlationId, void 0, "monitor_window_timeout"));
+      }, timeout);
+      const intervalId = window.setInterval(() => {
+        const contentWindow = iframe.contentWindow;
+        if (!contentWindow) {
+          return;
+        }
+        let href = "";
+        try {
+          href = contentWindow.location.href;
+        } catch (e) {
+        }
+        if (!href || href === "about:blank") {
+          return;
+        }
+        const responseString = responseMode === Constants_exports.ResponseMode.QUERY ? contentWindow.location.search : contentWindow.location.hash;
+        window.clearTimeout(timeoutId);
+        window.clearInterval(intervalId);
+        resolve(responseString);
+      }, IFRAME_POLL_INTERVAL_MS);
+    }).finally(() => {
+      try {
+        if (iframe.contentWindow) {
+          clearAuthResponseFromUrl(iframe.contentWindow);
+        }
+      } catch {
+      }
+    });
+  }
+
   // node_modules/@azure/msal-browser/dist/app/PublicClientApplication.mjs
   var PublicClientApplication = class {
     /**
@@ -16042,9 +16315,10 @@
     /**
      * Waits for the auth response from a popup window opened by MSAL.
      *
-     * The default implementation delegates to MSAL's `BroadcastChannel`-based bridge.
-     * Subclasses must return the raw response string (hash/query/fragment), or reject
-     * with an `AuthError` on failure.
+     * The default implementation delegates to MSAL's `BroadcastChannel`-based bridge,
+     * or to the v4-style same-origin location poller when
+     * `system.enableLegacyPolling` is set. Subclasses must return the raw response
+     * string (hash/query/fragment), or reject with an `AuthError` on failure.
      *
      * @internal
      * @param request The in-flight authorization or end-session request.
@@ -16053,12 +16327,17 @@
      */
     async waitForPopupResponse(request, popupWindow, popupWindowParent) {
       const controller = this.controller;
-      return waitForBridgeResponse(controller.getConfiguration().system.popupBridgeTimeout, controller.getLogger(), request, controller.getPerformanceClient());
+      const config = controller.getConfiguration();
+      if (config.system.enableLegacyPolling) {
+        return waitForPopupPollingResponse(config, controller.getLogger(), controller.getPerformanceClient(), request, popupWindow, popupWindowParent);
+      }
+      return waitForBridgeResponse(config.system.popupBridgeTimeout, controller.getLogger(), request, controller.getPerformanceClient());
     }
     /**
      * Waits for the auth response from a hidden iframe used by MSAL silent flows.
      *
-     * The default implementation delegates to MSAL's `BroadcastChannel`-based bridge.
+     * The default implementation delegates to MSAL's `BroadcastChannel`-based bridge,
+     * or to the v4-style location poller when `system.enableLegacyPolling` is set.
      * Subclasses must return the raw response string (hash/query/fragment), or reject
      * with an `AuthError` on failure.
      *
@@ -16069,6 +16348,9 @@
     async waitForIframeResponse(iframe, request) {
       const controller = this.controller;
       const config = controller.getConfiguration();
+      if (config.system.enableLegacyPolling) {
+        return waitForIframePollingResponse(config, controller.getLogger(), controller.getPerformanceClient(), iframe, request);
+      }
       return waitForBridgeResponse(config.system.iframeBridgeTimeout, controller.getLogger(), request, controller.getPerformanceClient(), config.experimental);
     }
     /**
@@ -16319,6 +16601,28 @@
     await pca.initialize();
     return pca;
   }
+  async function waitForPopupPollingResponse(config, logger, performanceClient, request, popupWindow, popupWindowParent) {
+    var _a;
+    const responseMode = ((_a = config.auth.OIDCOptions) == null ? void 0 : _a.responseMode) === Constants_exports.ResponseMode.QUERY ? Constants_exports.ResponseMode.QUERY : Constants_exports.ResponseMode.FRAGMENT;
+    performanceClient.addFields({ usesLegacyPolling: true }, request.correlationId);
+    const unloadHandler = () => {
+      try {
+        if (popupWindow && !popupWindow.closed) {
+          popupWindow.close();
+        }
+      } catch {
+      }
+    };
+    popupWindowParent.addEventListener("beforeunload", unloadHandler);
+    return monitorPopupForHash(popupWindow, popupWindowParent, responseMode, logger, unloadHandler, request.correlationId);
+  }
+  async function waitForIframePollingResponse(config, logger, performanceClient, iframe, request) {
+    var _a;
+    const responseMode = ((_a = config.auth.OIDCOptions) == null ? void 0 : _a.responseMode) === Constants_exports.ResponseMode.QUERY ? Constants_exports.ResponseMode.QUERY : Constants_exports.ResponseMode.FRAGMENT;
+    const iframePollTimeout = config.system.iframeBridgeTimeout;
+    performanceClient.addFields({ usesLegacyPolling: true, iframePollTimeout }, request.correlationId);
+    return monitorIframeForHash(iframe, iframePollTimeout, logger, request.correlationId, responseMode);
+  }
 
   // node_modules/@azure/msal-browser/dist/index.mjs
   var AuthenticationScheme2 = Constants_exports.AuthenticationScheme;
@@ -16552,6 +16856,7 @@
 @azure/msal-common/dist-browser/cache/utils/AccountEntityUtils.mjs:
 @azure/msal-common/dist-browser/error/AuthErrorCodes.mjs:
 @azure/msal-common/dist-browser/error/ClientConfigurationError.mjs:
+@azure/msal-common/dist-browser/network/ResponseHeaders.mjs:
 @azure/msal-common/dist-browser/error/ClientConfigurationErrorCodes.mjs:
 @azure/msal-common/dist-browser/authority/OpenIdConfigResponse.mjs:
 @azure/msal-common/dist-browser/utils/StringUtils.mjs:
@@ -16606,7 +16911,7 @@
 @azure/msal-common/dist-browser/network/INetworkModule.mjs:
 @azure/msal-common/dist-browser/request/BaseAuthRequest.mjs:
 @azure/msal-common/dist-browser/index-browser.mjs:
-  (*! @azure/msal-common v16.14.3 2026-10-21 *)
+  (*! @azure/msal-common v16.15.0 2026-10-27 *)
 
 @azure/msal-browser/dist/telemetry/BrowserPerformanceEvents.mjs:
 @azure/msal-browser/dist/error/BrowserAuthError.mjs:
@@ -16635,9 +16940,11 @@
 @azure/msal-browser/dist/utils/Helpers.mjs:
 @azure/msal-browser/dist/cache/BrowserCacheManager.mjs:
 @azure/msal-browser/dist/cache/AccountManager.mjs:
+@azure/msal-browser/dist/utils/PopupMonitor.mjs:
 @azure/msal-browser/dist/event/EventHandler.mjs:
 @azure/msal-browser/dist/interaction_client/BaseInteractionClient.mjs:
 @azure/msal-browser/dist/request/RequestHelpers.mjs:
+@azure/msal-browser/dist/utils/PopupOriginCheck.mjs:
 @azure/msal-browser/dist/interaction_client/StandardInteractionClient.mjs:
 @azure/msal-browser/dist/utils/BrowserDetection.mjs:
 @azure/msal-browser/dist/popup_relay/constants.mjs:
@@ -16681,7 +16988,8 @@
 @azure/msal-browser/dist/webBrokerBridge/PendingRequestRegistry.mjs:
 @azure/msal-browser/dist/naa/BridgeProxy.mjs:
 @azure/msal-browser/dist/operatingcontext/NestedAppOperatingContext.mjs:
+@azure/msal-browser/dist/utils/IframeMonitor.mjs:
 @azure/msal-browser/dist/app/PublicClientApplication.mjs:
 @azure/msal-browser/dist/index.mjs:
-  (*! @azure/msal-browser v5.26.0 2026-10-21 *)
+  (*! @azure/msal-browser v5.27.0 2026-10-27 *)
 */
