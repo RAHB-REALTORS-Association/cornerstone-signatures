@@ -8,3 +8,4 @@
 - Preserve `/app/data` across container upgrades.
 - A fresh v2 database is expected. Import compatibility intentionally accepts only v2 exports and final v1 schema-13 exports.
 - This project is AGPL-3.0-only. Deployed modifications must have complete corresponding source available to network users.
+- Read `docs/AGENT_NOTES.md` for local runtime, dashboard verification, release, and Coolify deployment notes learned in previous sessions.
