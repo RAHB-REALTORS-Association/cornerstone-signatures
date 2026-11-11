@@ -3520,7 +3520,7 @@
 
   // node_modules/@azure/msal-common/dist-browser/packageMetadata.mjs
   var name = "@azure/msal-common";
-  var version = "16.15.0";
+  var version = "16.16.1";
 
   // node_modules/@azure/msal-common/dist-browser/error/CacheErrorCodes.mjs
   var CacheErrorCodes_exports = {};
@@ -3763,6 +3763,7 @@
         };
         const tokenKeys = this.getTokenKeys();
         const currentScopes = ScopeSet.fromString(credential.target, correlationId);
+        const accessTokenKeysToRemove = [];
         tokenKeys.accessToken.forEach((key) => {
           if (!this.accessTokenKeyMatchesFilter(key, accessTokenFilter, false)) {
             return;
@@ -3771,10 +3772,13 @@
           if (tokenEntity && this.credentialMatchesFilter(tokenEntity, accessTokenFilter, correlationId)) {
             const tokenScopeSet = ScopeSet.fromString(tokenEntity.target, correlationId);
             if (tokenScopeSet.intersectingScopeSets(currentScopes)) {
-              this.removeAccessToken(key, correlationId);
+              accessTokenKeysToRemove.push(key);
             }
           }
         });
+        for (const key of accessTokenKeysToRemove) {
+          yield this.removeAccessTokenAndTokenBindingKey(key, correlationId, credential.keyId);
+        }
         yield this.setAccessTokenCredential(credential, correlationId, kmsi, additionalCacheKeyHash);
       });
     }
@@ -3943,18 +3947,22 @@
      * @param account
      */
     removeAccount(account, correlationId) {
-      this.removeAccountContext(account, correlationId);
       const accountKeys = this.getAccountKeys();
       const keyFilter = (key) => {
         return key.includes(account.homeAccountId) && key.includes(account.environment);
       };
+      this.getTokenKeys().idToken.filter(keyFilter).forEach((key) => {
+        this.removeIdToken(key, correlationId);
+      });
+      this.removeAccountContext(account, correlationId);
       accountKeys.filter(keyFilter).forEach((key) => {
         this.removeItem(key, correlationId);
         this.performanceClient.incrementFields({ accountsRemoved: 1 }, correlationId);
       });
     }
     /**
-     * Removes credentials associated with the provided account
+     * Removes access and refresh tokens associated with the provided account,
+     * preserving the account and its ID tokens.
      * @param account
      */
     removeAccountContext(account, correlationId) {
@@ -3962,9 +3970,6 @@
       const keyFilter = (key) => {
         return key.includes(account.homeAccountId) && key.includes(account.environment);
       };
-      allTokenKeys.idToken.filter(keyFilter).forEach((key) => {
-        this.removeIdToken(key, correlationId);
-      });
       allTokenKeys.accessToken.filter(keyFilter).forEach((key) => {
         this.removeAccessToken(key, correlationId);
       });
@@ -3978,31 +3983,62 @@
      * @param correlationId
      */
     removeAccessToken(key, correlationId) {
-      var _a;
+      const credential = this.removeAccessTokenCredential(key, correlationId);
+      if (credential) {
+        void this.removeTokenBindingKeyForCredential(credential, correlationId);
+      }
+    }
+    /**
+     * Removes an access token and waits for any unreferenced token-binding key
+     * cleanup. Internal callers that require deterministic cleanup should use
+     * this method instead of the synchronous public cache contract.
+     */
+    removeAccessTokenAndTokenBindingKey(key, correlationId, preservedKeyId) {
+      return __async(this, null, function* () {
+        const credential = this.removeAccessTokenCredential(key, correlationId);
+        if (credential) {
+          yield this.removeTokenBindingKeyForCredential(credential, correlationId, preservedKeyId);
+        }
+      });
+    }
+    removeAccessTokenCredential(key, correlationId) {
       const credential = this.getAccessTokenCredential(key, correlationId);
       if (!credential) {
-        return;
+        return null;
       }
       this.removeItem(key, correlationId);
       this.performanceClient.incrementFields({ accessTokensRemoved: 1 }, correlationId);
-      if (credential.credentialType.toLowerCase() === CredentialType.ACCESS_TOKEN_WITH_AUTH_SCHEME.toLowerCase()) {
-        const tokenType = (_a = credential.tokenType) == null ? void 0 : _a.toLowerCase();
-        switch (tokenType) {
-          case AuthenticationScheme.POP:
-          case AuthenticationScheme.DPOP.toLowerCase(): {
-            const accessTokenWithAuthSchemeEntity = credential;
-            const kid = accessTokenWithAuthSchemeEntity.keyId;
-            if (kid) {
-              void this.tokenBindingKeyManager.removeTokenBindingKey(kid, correlationId).catch(() => {
-                var _a2;
-                this.commonLogger.error("0id34f", correlationId);
-                (_a2 = this.performanceClient) == null ? void 0 : _a2.incrementFields({ removeTokenBindingKeyFailure: 1 }, correlationId);
-              });
+      return credential;
+    }
+    removeTokenBindingKeyForCredential(credential, correlationId, preservedKeyId) {
+      return __async(this, null, function* () {
+        var _a, _b;
+        if (credential.credentialType.toLowerCase() === CredentialType.ACCESS_TOKEN_WITH_AUTH_SCHEME.toLowerCase()) {
+          const tokenType = (_a = credential.tokenType) == null ? void 0 : _a.toLowerCase();
+          switch (tokenType) {
+            case AuthenticationScheme.POP:
+            case AuthenticationScheme.DPOP.toLowerCase(): {
+              const accessTokenWithAuthSchemeEntity = credential;
+              const kid = accessTokenWithAuthSchemeEntity.keyId;
+              if (kid && kid !== preservedKeyId && !this.isTokenBindingKeyReferenced(kid, correlationId)) {
+                try {
+                  yield this.tokenBindingKeyManager.removeTokenBindingKey(kid, correlationId);
+                } catch (e) {
+                  this.commonLogger.error("0id34f", correlationId);
+                  (_b = this.performanceClient) == null ? void 0 : _b.incrementFields({ removeTokenBindingKeyFailure: 1 }, correlationId);
+                }
+              }
+              break;
             }
-            break;
           }
         }
-      }
+      });
+    }
+    isTokenBindingKeyReferenced(keyId, correlationId) {
+      return this.getTokenKeys().accessToken.some((accessTokenKey) => {
+        const accessToken = this.getAccessTokenCredential(accessTokenKey, correlationId);
+        return (accessToken == null ? void 0 : accessToken.keyId) === keyId;
+      });
     }
     /**
      * Removes all app metadata objects from cache.
@@ -4132,6 +4168,7 @@
       this.commonLogger.trace("1t7hz1", correlationId);
       const scopes = ScopeSet.createSearchScopes(request.scopes, correlationId);
       const authScheme = request.authenticationScheme || AuthenticationScheme.BEARER;
+      const normalizedAuthScheme = authScheme.toLowerCase();
       const credentialType = authScheme && authScheme.toLowerCase() !== AuthenticationScheme.BEARER.toLowerCase() ? CredentialType.ACCESS_TOKEN_WITH_AUTH_SCHEME : CredentialType.ACCESS_TOKEN;
       const attributeTokenPartition = serializeAttributeTokens(request.attributeTokens);
       const additionalCacheKeyComponents = attributeTokenPartition ? {
@@ -4145,7 +4182,7 @@
         realm: targetRealm || account.tenantId,
         target: scopes,
         tokenType: authScheme,
-        keyId: authScheme === AuthenticationScheme.SSH ? request.sshKid : void 0,
+        keyId: authScheme === AuthenticationScheme.SSH ? request.sshKid : normalizedAuthScheme === AuthenticationScheme.DPOP.toLowerCase() ? request.popKid || request.dpopJkt : void 0,
         additionalCacheKeyComponents
       };
       const accessTokenKeys = tokenKeys && tokenKeys.accessToken || this.getTokenKeys().accessToken;
@@ -4994,6 +5031,12 @@
       throw createClientConfigurationError(invalidDpopNonce, correlationId);
     }
   }
+  function normalizeDpopResourceRequestContext(context, correlationId = "") {
+    return {
+      htm: normalizeHtm(context.htm, correlationId),
+      htu: normalizeHtu(context.htu, correlationId)
+    };
+  }
   var DpopProofGenerator = class {
     constructor(cryptoUtils, tokenBindingKeyManager) {
       this.cryptoUtils = cryptoUtils;
@@ -5048,10 +5091,11 @@
      */
     buildResourceProofClaims(params, correlationId = "") {
       validateDpopNonce(params.nonce, correlationId);
+      const resourceContext = normalizeDpopResourceRequestContext(params, correlationId);
       const claims = {
         jti: this.cryptoUtils.createNewGuid(),
-        htm: normalizeHtm(params.htm, correlationId),
-        htu: normalizeHtu(params.htu, correlationId),
+        htm: resourceContext.htm,
+        htu: resourceContext.htu,
         ath: params.ath,
         iat: nowSeconds()
       };
@@ -6808,6 +6852,7 @@
   var PlatformAuthHandleNativeResponse = "platformAuthHandleNativeResponse";
   var PlatformAuthCacheAccount = "platformAuthCacheAccount";
   var PlatformAuthCacheNativeTokens = "platformAuthCacheNativeTokens";
+  var PlatformAuthDpopKeyCleanup = "platformAuthDpopKeyCleanup";
   var RemoveHiddenIframe = "removeHiddenIframe";
   var ImportExistingCache = "importExistingCache";
   var GeneratePkceCodes = "generatePkceCodes";
@@ -6884,7 +6929,6 @@
   var uninitializedPublicClientApplication = "uninitialized_public_client_application";
   var nativePromptNotSupported = "native_prompt_not_supported";
   var invalidBase64String = "invalid_base64_string";
-  var invalidPopTokenRequest = "invalid_pop_token_request";
   var unsupportedTokenBindingAlgorithm = "unsupported_token_binding_algorithm";
   var tokenBindingKeyAlgorithmMismatch = "token_binding_key_algorithm_mismatch";
   var tokenBindingKeyJwkThumbprintMismatch = "token_binding_key_jwk_thumbprint_mismatch";
@@ -7921,6 +7965,20 @@
       });
     }
     /**
+     * Returns whether a key is available in persistent storage. Unlike
+     * containsKey, this does not consult the in-memory fallback.
+     */
+    containsKeyInPersistentStorage(key, correlationId) {
+      return __async(this, null, function* () {
+        try {
+          return yield this.indexedDBCache.containsKey(key);
+        } catch (e) {
+          this.handleDatabaseAccessError(e, correlationId);
+          return false;
+        }
+      });
+    }
+    /**
      * Returns true or false if the given key is present in the cache.
      * @param key
      * @param correlationId
@@ -8022,6 +8080,14 @@
       });
     }
     /**
+     * Returns whether a browser token-binding key is available.
+     */
+    hasTokenBindingKey(keyId, correlationId) {
+      return __async(this, null, function* () {
+        return this.cache.containsKey(keyId, correlationId);
+      });
+    }
+    /**
      * Clears browser token-binding keys from memory and persistent storage.
      * @param correlationId - Request correlation identifier.
      */
@@ -8086,6 +8152,15 @@
           throw createBrowserAuthError(cryptoKeyNotFound, correlationId);
         }
         return cachedKeyPair;
+      });
+    }
+    /**
+     * Returns whether a browser token-binding key survived in persistent
+     * storage and can be restored after a redirect navigation.
+     */
+    isTokenBindingKeyPersisted(keyId, correlationId) {
+      return __async(this, null, function* () {
+        return this.cache.containsKeyInPersistentStorage(keyId, correlationId);
       });
     }
     /** @internal */
@@ -8783,7 +8858,7 @@
 
   // node_modules/@azure/msal-browser/dist/packageMetadata.mjs
   var name2 = "@azure/msal-browser";
-  var version2 = "5.27.0";
+  var version2 = "5.29.0";
 
   // node_modules/@azure/msal-browser/dist/utils/Helpers.mjs
   function removeElementFromArray(array, element) {
@@ -9331,9 +9406,10 @@
               if (accessTokenKeys.length <= i) {
                 throw cacheError;
               }
-              this.removeAccessToken(
+              yield this.removeAccessTokenAndTokenBindingKey(
                 accessTokenKeys[i],
                 correlationId,
+                void 0,
                 false
                 // Don't save token keys yet, do it at the end
               );
@@ -9469,6 +9545,15 @@
     removeAccessToken(key, correlationId, updateTokenKeys = true) {
       super.removeAccessToken(key, correlationId);
       updateTokenKeys && this.removeAccessTokenKeys([key], correlationId);
+    }
+    /**
+     * Removes an access token and awaits token-binding key cleanup.
+     */
+    removeAccessTokenAndTokenBindingKey(key, correlationId, preservedKeyId, updateTokenKeys = true) {
+      return __async(this, null, function* () {
+        yield __superGet(_BrowserCacheManager.prototype, this, "removeAccessTokenAndTokenBindingKey").call(this, key, correlationId, preservedKeyId);
+        updateTokenKeys && this.removeAccessTokenKeys([key], correlationId);
+      });
     }
     /**
      * Remove access token key from the key map
@@ -10422,12 +10507,6 @@
     return __async(this, null, function* () {
       switch (request.authenticationScheme) {
         case Constants_exports.AuthenticationScheme.DPOP:
-          if (request.platformBroker) {
-            return {};
-          }
-          if (request.dpopJkt) {
-            return { dpopJkt: request.dpopJkt };
-          }
           return {
             dpopJkt: yield tokenBindingKeyManager.provisionTokenBindingKey({
               tokenBindingKeyType: Constants_exports.AuthenticationScheme.DPOP.toLowerCase(),
@@ -10449,6 +10528,29 @@
         default:
           return {};
       }
+    });
+  }
+  function removeTokenBindingKeyOnFailure(request, tokenBindingKeyManager, logger, performanceClient) {
+    return __async(this, null, function* () {
+      if (request.authenticationScheme !== Constants_exports.AuthenticationScheme.DPOP || !request.dpopJkt) {
+        return;
+      }
+      try {
+        yield tokenBindingKeyManager.removeTokenBindingKey(request.dpopJkt, request.correlationId);
+      } catch (e) {
+        logger.error("1su7ne", request.correlationId);
+        performanceClient.incrementFields({ removeTokenBindingKeyFailure: 1 }, request.correlationId);
+      }
+    });
+  }
+  function isTokenBindingKeyPersistedForRedirect(request, tokenBindingKeyManager) {
+    return __async(this, null, function* () {
+      var _a;
+      const keyId = (_a = request.dpopJkt) != null ? _a : request.keyId;
+      if (!keyId || !tokenBindingKeyManager.isTokenBindingKeyPersisted) {
+        return true;
+      }
+      return tokenBindingKeyManager.isTokenBindingKeyPersisted(keyId, request.correlationId);
     });
   }
   function initializeBaseRequest(request, config, performanceClient, logger, correlationId) {
@@ -10932,8 +11034,17 @@
   };
 
   // node_modules/@azure/msal-browser/dist/broker/nativeBroker/PlatformAuthRequest.mjs
+  var PlatformAuthEnclave = {
+    /**
+     * Persisted software key using MS_KEY_STORAGE_PROVIDER.
+     */
+    SOFTWARE: "sw"
+  };
   var PlatformAuthTokenType = {
     DPOP_WITH_PROOF: "dpop+proof"
+  };
+  var PlatformAuthBindingPreference = {
+    ATTESTED: "attested"
   };
   var PROOF_OF_POSSESSION_TOKEN_TYPES = [
     Constants_exports.AuthenticationScheme.POP,
@@ -10943,15 +11054,15 @@
   function isProofOfPossessionTokenType(tokenType) {
     return tokenType !== void 0 && PROOF_OF_POSSESSION_TOKEN_TYPES.includes(tokenType);
   }
-  function createPlatformAuthExtraParametersNoCache(extraParametersNoCache, isProofOfPossessionRequest, resourceRequestMethod, resourceRequestUri, dpopNonce) {
-    if (!isProofOfPossessionRequest) {
-      return extraParametersNoCache;
+  function createPlatformAuthExtraParametersNoCache(tokenType, resourceRequestMethod, resourceRequestUri, dpopNonce) {
+    if (!isProofOfPossessionTokenType(tokenType)) {
+      return void 0;
     }
-    return __spreadValues(__spreadValues(__spreadValues(__spreadValues({}, extraParametersNoCache), resourceRequestMethod && {
+    return __spreadValues(__spreadValues(__spreadValues({}, resourceRequestMethod && {
       pop_method: resourceRequestMethod
     }), resourceRequestUri && {
       pop_url: resourceRequestUri
-    }), dpopNonce && {
+    }), tokenType === PlatformAuthTokenType.DPOP_WITH_PROOF && dpopNonce && {
       pop_nonce: dpopNonce
     });
   }
@@ -11067,7 +11178,8 @@
   };
 
   // node_modules/@azure/msal-browser/dist/interaction_client/PlatformAuthInteractionClient.mjs
-  var PlatformAuthInteractionClient = class extends BaseInteractionClient {
+  var DPOP_POP_KID_NOT_SUPPORTED = "dpop_pop_kid_not_supported";
+  var PlatformAuthInteractionClient = class _PlatformAuthInteractionClient extends BaseInteractionClient {
     constructor(config, browserStorage, browserCrypto, logger, eventHandler, navigationClient, apiId, performanceClient, provider, accountId, nativeStorageImpl, correlationId, tokenBindingKeyManager) {
       super(config, browserStorage, browserCrypto, logger, eventHandler, navigationClient, performanceClient, correlationId, provider, tokenBindingKeyManager);
       this.apiId = apiId;
@@ -11115,30 +11227,39 @@
           }, e);
           throw e;
         }
-        try {
-          const result = yield this.acquireTokensFromCache(this.accountId, nativeRequest);
-          nativeATMeasurement.add({
-            isNativeBroker: false
-          });
-          nativeATMeasurement.end({
-            success: true,
-            fromCache: true
-          });
-          return result;
-        } catch (e) {
-          if (cacheLookupPolicy === CacheLookupPolicy.AccessToken) {
-            this.logger.info("0eitbc", this.correlationId);
+        if (this.apiId === ApiId.acquireTokenSilent_silentFlow) {
+          let cachedResult;
+          try {
+            cachedResult = yield this.acquireTokensFromCache(this.accountId, nativeRequest, cacheLookupPolicy);
+          } catch (e) {
+            if (cacheLookupPolicy === CacheLookupPolicy.AccessToken) {
+              this.logger.info("0eitbc", this.correlationId);
+              nativeATMeasurement.add({
+                isNativeBroker: false
+              });
+              nativeATMeasurement.end({
+                success: false
+              });
+              yield this.resetGeneratedDpopRequestKeyBestEffort(nativeRequest);
+              throw e;
+            }
+            this.logger.info("0957j1", this.correlationId);
+          }
+          if (cachedResult) {
             nativeATMeasurement.add({
               isNativeBroker: false
             });
             nativeATMeasurement.end({
-              success: false
+              success: true,
+              fromCache: true
             });
-            throw e;
+            yield this.resetGeneratedDpopRequestKey(nativeRequest);
+            return cachedResult;
           }
-          this.logger.info("0957j1", this.correlationId);
         }
         try {
+          yield this.prepareDpopBrokerRequest(nativeRequest);
+          this.addDpopBrokerAttemptTelemetry(nativeRequest);
           const validatedResponse = yield this.platformAuthProvider.sendMessage(nativeRequest);
           const result = yield invokeAsync(this.handleNativeResponse.bind(this), PlatformAuthHandleNativeResponse, this.logger, this.performanceClient, this.correlationId)(validatedResponse, nativeRequest, reqTimestamp, request.storeInCache);
           nativeATMeasurement.end({
@@ -11155,6 +11276,7 @@
             success: false
           }, e);
           this.setBrokerErrorTelemetry(e);
+          yield this.resetGeneratedDpopRequestKeyBestEffort(nativeRequest);
           throw e;
         }
       });
@@ -11185,27 +11307,49 @@
      */
     createSilentCacheRequest(request, cachedAccount) {
       var _a;
-      const silentRequest = {
+      const silentRequest = __spreadProps(__spreadValues({
         authority: request.authority,
         correlationId: this.correlationId,
         scopes: ScopeSet.fromString(request.scope, this.correlationId).asArray(),
         account: cachedAccount,
-        forceRefresh: false,
+        forceRefresh: false
+      }, this.createSilentCacheTokenBindingParameters(request)), {
         resource: (_a = request.extraParameters) == null ? void 0 : _a.resource
-      };
+      });
       if (request.attributeTokens) {
         silentRequest.attributeTokens = request.attributeTokens.split(" ");
       }
       return silentRequest;
     }
     /**
-     * Fetches the tokens from the cache if un-expired
+     * Maps platform-broker token-binding state to silent-cache request fields.
+     * @param request
+     */
+    createSilentCacheTokenBindingParameters(request) {
+      const authenticationScheme = this.isDpopBrokerRequest(request) ? Constants_exports.AuthenticationScheme.DPOP : request.tokenType;
+      if (authenticationScheme !== Constants_exports.AuthenticationScheme.DPOP && authenticationScheme !== Constants_exports.AuthenticationScheme.POP) {
+        return { authenticationScheme };
+      }
+      return __spreadProps(__spreadValues(__spreadValues({
+        authenticationScheme
+      }, authenticationScheme === Constants_exports.AuthenticationScheme.DPOP && request.keyId && { dpopJkt: request.keyId }), authenticationScheme === Constants_exports.AuthenticationScheme.POP && request.signPopToken === false && request.keyId && { popKid: request.keyId }), {
+        resourceRequestMethod: request.resourceRequestMethod,
+        resourceRequestUri: request.resourceRequestUri
+      });
+    }
+    /**
+     * Fetches unexpired tokens when allowed by cache policy.
      * @param nativeAccountId
      * @param request
-     * @returns authenticationResult
+     * @param cacheLookupPolicy
+     * @returns Cached result, or undefined when cache policy bypasses lookup.
      */
-    acquireTokensFromCache(nativeAccountId, request) {
-      return __async(this, null, function* () {
+    acquireTokensFromCache(_0, _1) {
+      return __async(this, arguments, function* (nativeAccountId, request, cacheLookupPolicy = CacheLookupPolicy.Default) {
+        if (cacheLookupPolicy === CacheLookupPolicy.RefreshTokenAndNetwork || cacheLookupPolicy === CacheLookupPolicy.Skip) {
+          this.logger.verbose("03uwyk", this.correlationId);
+          return void 0;
+        }
         if (!nativeAccountId) {
           this.logger.warning("1ndf3e", this.correlationId);
           throw createClientAuthError(ClientAuthErrorCodes_exports.noAccountFound, this.correlationId);
@@ -11251,8 +11395,15 @@
         const nativeRequest = yield invokeAsync(this.initializePlatformRequest.bind(this), PlatformAuthInteractionClientInitializeRequest, this.logger, this.performanceClient, this.correlationId)(request);
         const navigateToLoginRequestUrl = (_a = options == null ? void 0 : options.navigateToLoginRequestUrl) != null ? _a : true;
         try {
-          yield this.platformAuthProvider.sendMessage(nativeRequest);
+          yield this.prepareDpopBrokerRequest(nativeRequest);
+          this.addDpopBrokerAttemptTelemetry(nativeRequest);
+          const response = yield this.platformAuthProvider.sendMessage(nativeRequest);
+          const dpopBrokerOutcome = this.validateDpopBrokerOutcome(response, nativeRequest);
+          if (dpopBrokerOutcome === "L3") {
+            yield this.resetGeneratedDpopRequestKey(nativeRequest);
+          }
         } catch (e) {
+          yield this.resetGeneratedDpopRequestKeyBestEffort(nativeRequest);
           if (e instanceof NativeAuthError) {
             const serverTelemetryManager = initializeServerTelemetryManager(this.apiId, this.config.auth.clientId, this.correlationId, this.browserStorage, this.logger, void 0, this.config.system.serverTelemetryEnabled);
             serverTelemetryManager.setNativeBrokerErrorCode(e.errorCode);
@@ -11260,7 +11411,15 @@
               this.setBrokerErrorTelemetry(e);
               throw e;
             }
+          } else if (this.isDpopBrokerRequest(nativeRequest)) {
+            throw e;
           }
+        }
+        try {
+          yield this.ensureRedirectDpopKeyIsPersisted(nativeRequest);
+        } catch (e) {
+          yield this.resetGeneratedDpopRequestKeyBestEffort(nativeRequest);
+          throw e;
         }
         this.browserStorage.setTemporaryCache(TemporaryCacheKeys.NATIVE_REQUEST, JSON.stringify(__spreadProps(__spreadValues({}, nativeRequest), {
           storeInCache: request.storeInCache
@@ -11272,7 +11431,13 @@
         };
         const redirectUri = navigateToLoginRequestUrl ? UrlString.getAbsoluteUrl(request.redirectStartPage || window.location.href, getCurrentUri(), this.correlationId) : getRedirectUri(request.redirectUri, this.config.auth.redirectUri, this.logger, this.correlationId);
         rootMeasurement.end({ success: true });
-        yield this.navigationClient.navigateExternal(redirectUri, navigationOptions);
+        try {
+          yield this.navigationClient.navigateExternal(redirectUri, navigationOptions);
+        } catch (e) {
+          this.browserStorage.removeItem(this.browserStorage.generateCacheKey(TemporaryCacheKeys.NATIVE_REQUEST));
+          yield this.resetGeneratedDpopRequestKeyBestEffort(nativeRequest);
+          throw e;
+        }
       });
     }
     /**
@@ -11303,6 +11468,8 @@
         this.browserStorage.removeItem(this.browserStorage.generateCacheKey(TemporaryCacheKeys.NATIVE_REQUEST));
         const reqTimestamp = TimeUtils_exports.nowSeconds();
         try {
+          yield this.prepareDpopBrokerRequest(request, true);
+          this.addDpopBrokerAttemptTelemetry(request);
           this.logger.verbose("003x5a", this.correlationId);
           const response = yield this.platformAuthProvider.sendMessage(request);
           const authResult = yield invokeAsync(this.handleNativeResponse.bind(this), PlatformAuthHandleNativeResponse, this.logger, this.performanceClient, this.correlationId)(response, request, reqTimestamp, storeInCache);
@@ -11310,7 +11477,12 @@
           serverTelemetryManager.clearNativeBrokerErrorCode();
           return authResult;
         } catch (e) {
+          if (e instanceof NativeAuthError) {
+            const serverTelemetryManager = initializeServerTelemetryManager(this.apiId, this.config.auth.clientId, this.correlationId, this.browserStorage, this.logger, void 0, this.config.system.serverTelemetryEnabled);
+            serverTelemetryManager.setNativeBrokerErrorCode(e.errorCode);
+          }
           this.setBrokerErrorTelemetry(e);
+          yield this.resetGeneratedDpopRequestKeyBestEffort(request);
           throw e;
         }
       });
@@ -11333,6 +11505,7 @@
       return __async(this, null, function* () {
         var _a, _b;
         this.logger.trace("1bojln", this.correlationId);
+        const dpopBrokerOutcome = this.validateDpopBrokerOutcome(response, request);
         const idTokenClaims = AuthToken_exports.extractTokenClaims(response.id_token, base64Decode, this.correlationId);
         const homeAccountIdentifier = this.createHomeAccountIdentifier(response, idTokenClaims);
         const cachedhomeAccountId = (_a = this.browserStorage.getAccountInfoFilteredBy({
@@ -11363,7 +11536,12 @@
         );
         response.expires_in = Number(response.expires_in);
         const result = yield invokeAsync(this.generateAuthenticationResult.bind(this), NativeGenerateAuthResult, this.logger, this.performanceClient, this.correlationId)(response, request, idTokenClaims, baseAccount, authority.canonicalAuthority, reqTimestamp);
-        yield invokeAsync(this.cacheAccount.bind(this), PlatformAuthCacheAccount, this.logger, this.performanceClient, this.correlationId)(baseAccount, AuthToken_exports.isKmsi(idTokenClaims));
+        const isL3DpopResponse = dpopBrokerOutcome === "L3";
+        const shouldRemoveGeneratedDpopKey = isL3DpopResponse || this.isDpopBrokerRequest(request) && (storeInCache == null ? void 0 : storeInCache.accessToken) === false;
+        if (shouldRemoveGeneratedDpopKey) {
+          yield this.resetGeneratedDpopRequestKey(request);
+        }
+        yield invokeAsync(this.cacheAccount.bind(this), PlatformAuthCacheAccount, this.logger, this.performanceClient, this.correlationId)(baseAccount, AuthToken_exports.isKmsi(idTokenClaims), !isL3DpopResponse);
         yield invokeAsync(this.cacheNativeTokens.bind(this), PlatformAuthCacheNativeTokens, this.logger, this.performanceClient, this.correlationId)(
           response,
           request,
@@ -11373,7 +11551,8 @@
           reqTimestamp,
           authority.getPreferredCache(),
           // environment
-          storeInCache
+          storeInCache,
+          dpopBrokerOutcome
         );
         return result;
       });
@@ -11438,8 +11617,8 @@
      */
     generateAuthenticationResult(response, request, idTokenClaims, accountEntity, authority, reqTimestamp) {
       return __async(this, null, function* () {
-        var _a, _b;
-        const mats = this.addTelemetryFromNativeResponse(response.properties.MATS);
+        var _a, _b, _c;
+        const mats = this.addTelemetryFromNativeResponse((_a = response.properties) == null ? void 0 : _a.MATS);
         const responseScopes = this.generateScopes(request.scope, response.scope);
         const accountProperties = response.account.properties || {};
         const uid = accountProperties["UID"] || idTokenClaims.oid || idTokenClaims.sub || "";
@@ -11454,13 +11633,20 @@
         if (accountInfo.nativeAccountId !== response.account.id) {
           accountInfo.nativeAccountId = response.account.id;
           const targetTenantId = tid || accountInfo.tenantId;
-          const tenantProfile = (_a = accountInfo.tenantProfiles) == null ? void 0 : _a.get(targetTenantId);
+          const tenantProfile = (_b = accountInfo.tenantProfiles) == null ? void 0 : _b.get(targetTenantId);
           if (tenantProfile) {
             tenantProfile.nativeAccountId = response.account.id;
           }
         }
         const responseAccessToken = yield this.generatePopAccessToken(response, request);
-        const tokenType = request.tokenType === Constants_exports.AuthenticationScheme.POP ? Constants_exports.AuthenticationScheme.POP : Constants_exports.AuthenticationScheme.BEARER;
+        const isDpopRequest = this.isDpopBrokerRequest(request);
+        let tokenType = Constants_exports.AuthenticationScheme.BEARER;
+        if (isDpopRequest) {
+          tokenType = Constants_exports.AuthenticationScheme.DPOP;
+        } else if (request.tokenType === Constants_exports.AuthenticationScheme.POP) {
+          tokenType = Constants_exports.AuthenticationScheme.POP;
+        }
+        const dpopProof = isDpopRequest ? yield this.generateDpopProof(response, request) : void 0;
         const result = __spreadValues({
           authority,
           uniqueId: uid,
@@ -11474,10 +11660,11 @@
           // Request timestamp and NativeResponse expires_in are in seconds, converting to Date for AuthenticationResult
           expiresOn: TimeUtils_exports.toDateFromSeconds(reqTimestamp + response.expires_in),
           tokenType,
+          dpopProof,
           correlationId: this.correlationId,
           state: response.state,
           fromPlatformBroker: true
-        }, ((_b = request.extraParameters) == null ? void 0 : _b.resource) && {
+        }, ((_c = request.extraParameters) == null ? void 0 : _c.resource) && {
           resource: request.extraParameters.resource
         });
         return result;
@@ -11487,10 +11674,12 @@
      * cache the account entity in browser storage
      * @param accountEntity
      */
-    cacheAccount(accountEntity, kmsi) {
+    cacheAccount(accountEntity, kmsi, clearExistingTokens = true) {
       return __async(this, null, function* () {
         yield this.browserStorage.setAccount(accountEntity, this.correlationId, kmsi, this.apiId);
-        this.browserStorage.removeAccountContext(AccountEntityUtils_exports.getAccountInfo(accountEntity), this.correlationId);
+        if (clearExistingTokens) {
+          this.browserStorage.removeAccountContext(AccountEntityUtils_exports.getAccountInfo(accountEntity), this.correlationId);
+        }
       });
     }
     /**
@@ -11503,22 +11692,26 @@
      * @param tenantId
      * @param reqTimestamp
      */
-    cacheNativeTokens(response, request, homeAccountIdentifier, idTokenClaims, tenantId, reqTimestamp, environment, storeInCache) {
+    cacheNativeTokens(response, request, homeAccountIdentifier, idTokenClaims, tenantId, reqTimestamp, environment, storeInCache, dpopBrokerOutcome = "none") {
       return __async(this, null, function* () {
         var _a;
         const cachedIdToken = CacheHelpers_exports.createIdTokenEntity(homeAccountIdentifier, environment, response.id_token || "", request.clientId, idTokenClaims.tid || "");
+        if (!!cachedIdToken && (storeInCache == null ? void 0 : storeInCache.idToken) !== false) {
+          yield this.browserStorage.setIdTokenCredential(cachedIdToken, this.correlationId, AuthToken_exports.isKmsi(idTokenClaims));
+        }
+        if (dpopBrokerOutcome === "L3") {
+          return;
+        }
+        if ((storeInCache == null ? void 0 : storeInCache.accessToken) === false) {
+          return;
+        }
         const expiresIn = request.tokenType === Constants_exports.AuthenticationScheme.POP ? Constants_exports.SHR_NONCE_VALIDITY : (typeof response.expires_in === "string" ? parseInt(response.expires_in, 10) : response.expires_in) || 0;
         const tokenExpirationSeconds = reqTimestamp + expiresIn;
         const responseScopes = this.generateScopes(response.scope, request.scope);
-        const additionalCacheKeyComponents = request.attributeTokens ? {
-          attribute_tokens: request.attributeTokens
-        } : void 0;
-        const cachedAccessToken = CacheHelpers_exports.createAccessTokenEntity(homeAccountIdentifier, environment, response.access_token, request.clientId, idTokenClaims.tid || tenantId, responseScopes.printScopes(), tokenExpirationSeconds, 0, base64Decode, request.correlationId, void 0, request.tokenType, void 0, request.keyId, additionalCacheKeyComponents);
+        const additionalCacheKeyComponents = request.attributeTokens ? { attribute_tokens: request.attributeTokens } : void 0;
+        const cachedAccessToken = CacheHelpers_exports.createAccessTokenEntity(homeAccountIdentifier, environment, response.access_token, request.clientId, idTokenClaims.tid || tenantId, responseScopes.printScopes(), tokenExpirationSeconds, 0, base64Decode, request.correlationId, void 0, this.isDpopBrokerRequest(request) ? Constants_exports.AuthenticationScheme.DPOP : request.tokenType, void 0, request.keyId, additionalCacheKeyComponents);
         if ((_a = request.extraParameters) == null ? void 0 : _a.resource) {
           cachedAccessToken.resource = request.extraParameters.resource;
-        }
-        if (!!cachedIdToken && (storeInCache == null ? void 0 : storeInCache.idToken) !== false) {
-          yield this.browserStorage.setIdTokenCredential(cachedIdToken, this.correlationId, AuthToken_exports.isKmsi(idTokenClaims));
         }
         const nativeCacheRecord = {
           accessToken: cachedAccessToken
@@ -11590,7 +11783,7 @@
         this.logger.trace("1xdm2a", this.correlationId);
         const canonicalAuthority = yield this.getCanonicalAuthority(request);
         const configClaims = request.skipBrokerClaims && !!request.embeddedClientId ? void 0 : this.config.auth.clientCapabilities;
-        const { scopes, claims, extraParametersNoCache, dpopNonce } = request;
+        const { scopes, claims, dpopNonce } = request;
         const scopeSet = new ScopeSet([...scopes || [], ...Constants_exports.OIDC_DEFAULT_SCOPES], this.correlationId);
         const mergedClaims = RequestParameterBuilder_exports.buildMergedClaims(claims, (configClaims == null ? void 0 : configClaims.length) ? configClaims : void 0);
         const hasAttributeTokens = !!((_a = request.attributeTokens) == null ? void 0 : _a.length);
@@ -11614,45 +11807,360 @@
           loginHint: request.loginHint,
           extraParameters: __spreadValues(__spreadValues({}, request.extraParameters), request.resource && { resource: request.resource }),
           extendedExpiryToken: false,
-          keyId: request.popKid,
-          resourceRequestMethod: request.resourceRequestMethod,
-          resourceRequestUri: request.resourceRequestUri,
-          shrClaims: request.shrClaims,
-          shrNonce: request.shrNonce,
-          extraParametersNoCache: createPlatformAuthExtraParametersNoCache(extraParametersNoCache, isProofOfPossessionTokenType(request.authenticationScheme), request.resourceRequestMethod, request.resourceRequestUri, dpopNonce)
+          keyId: request.popKid
         };
         if (hasAttributeTokens) {
           validatedRequest.attributeTokens = CacheHelpers_exports.serializeAttributeTokens(request.attributeTokens);
-        }
-        if (validatedRequest.signPopToken && !!request.popKid) {
-          throw createBrowserAuthError(invalidPopTokenRequest, this.correlationId);
         }
         this.handleExtraBrokerParams(validatedRequest, request.embeddedClientId);
         validatedRequest.extraParameters = validatedRequest.extraParameters || {};
         validatedRequest.extraParameters.telemetry = PlatformAuthConstants.MATS_TELEMETRY;
         if (request.authenticationScheme === Constants_exports.AuthenticationScheme.POP) {
           const shrParameters = {
-            resourceRequestUri: request.resourceRequestUri,
             resourceRequestMethod: request.resourceRequestMethod,
+            resourceRequestUri: request.resourceRequestUri,
             shrClaims: request.shrClaims,
             shrNonce: request.shrNonce,
             correlationId: this.correlationId
           };
           const popTokenGenerator = new PopTokenGenerator(this.browserCrypto, this.tokenBindingKeyManager, this.performanceClient);
-          let reqCnfData;
           if (!validatedRequest.keyId) {
             const generatedReqCnfData = yield invokeAsync(popTokenGenerator.generateCnf.bind(popTokenGenerator), PerformanceEvents_exports.PopTokenGenerateCnf, this.logger, this.performanceClient, this.correlationId)(shrParameters, this.logger);
-            reqCnfData = generatedReqCnfData.reqCnfString;
+            validatedRequest.reqCnf = generatedReqCnfData.reqCnfString;
             validatedRequest.keyId = generatedReqCnfData.kid;
             validatedRequest.signPopToken = true;
           } else {
-            reqCnfData = this.browserCrypto.base64UrlEncode(JSON.stringify({ kid: validatedRequest.keyId }));
+            validatedRequest.reqCnf = this.browserCrypto.base64UrlEncode(JSON.stringify({ kid: validatedRequest.keyId }));
             validatedRequest.signPopToken = false;
           }
-          validatedRequest.reqCnf = reqCnfData;
+          validatedRequest.resourceRequestMethod = request.resourceRequestMethod;
+          validatedRequest.resourceRequestUri = request.resourceRequestUri;
+          validatedRequest.shrClaims = request.shrClaims;
+          validatedRequest.shrNonce = request.shrNonce;
+        } else if (request.authenticationScheme === Constants_exports.AuthenticationScheme.DPOP) {
+          Object.assign(validatedRequest, this.createDpopRequestParameters(request));
         }
+        validatedRequest.extraParametersNoCache = createPlatformAuthExtraParametersNoCache(validatedRequest.tokenType, validatedRequest.resourceRequestMethod, validatedRequest.resourceRequestUri, dpopNonce);
         this.addRequestSKUs(validatedRequest);
         return validatedRequest;
+      });
+    }
+    /**
+     * Creates and validates the broker-specific parameters for a DPoP request.
+     * @param request - Developer-provided token request.
+     * @returns Broker parameters for a DPoP token and resource proof.
+     */
+    createDpopRequestParameters(request) {
+      var _a, _b;
+      if (request.popKid) {
+        throw createBrowserAuthError(DPOP_POP_KID_NOT_SUPPORTED, this.correlationId);
+      }
+      if (!((_a = request.resourceRequestMethod) == null ? void 0 : _a.trim()) || !((_b = request.resourceRequestUri) == null ? void 0 : _b.trim())) {
+        throw createClientConfigurationError(ClientConfigurationErrorCodes_exports.dpopMissingResourceContext, this.correlationId);
+      }
+      const resourceContext = normalizeDpopResourceRequestContext({
+        htm: request.resourceRequestMethod,
+        htu: request.resourceRequestUri
+      }, this.correlationId);
+      return {
+        tokenType: PlatformAuthTokenType.DPOP_WITH_PROOF,
+        preferBinding: PlatformAuthBindingPreference.ATTESTED,
+        keyId: request.dpopJkt,
+        resourceRequestMethod: resourceContext.htm,
+        resourceRequestUri: resourceContext.htu
+      };
+    }
+    /**
+     * Provisions the local key and confirmation data for a DPoP broker request.
+     * @param request - Broker request to prepare.
+     * @param reuseExistingKey - Whether a complete existing key binding may be reused.
+     */
+    prepareDpopBrokerRequest(request, reuseExistingKey = false) {
+      return __async(this, null, function* () {
+        if (request.tokenType !== PlatformAuthTokenType.DPOP_WITH_PROOF) {
+          return;
+        }
+        if (reuseExistingKey && (request.keyId || request.reqCnf)) {
+          if (!request.keyId || !request.reqCnf) {
+            throw createAuthError(AuthErrorCodes_exports.unexpectedError, this.correlationId, "DPoP request key binding is incomplete after redirect.");
+          }
+          const expectedReqCnf = this.createDpopBrokerReqCnf(request.keyId);
+          if (request.reqCnf !== expectedReqCnf) {
+            throw createAuthError(AuthErrorCodes_exports.unexpectedError, this.correlationId, "DPoP request key binding is invalid after redirect.");
+          }
+          const hasKey = this.tokenBindingKeyManager.hasTokenBindingKey !== void 0 ? yield this.tokenBindingKeyManager.hasTokenBindingKey(request.keyId, this.correlationId) : yield this.tokenBindingKeyManager.getTokenBindingPublicKeyJwk(request.keyId, this.correlationId).then(() => true, () => false);
+          if (!hasKey) {
+            throw createAuthError(AuthErrorCodes_exports.unexpectedError, this.correlationId, "DPoP request key is unavailable after redirect.");
+          }
+          return;
+        }
+        if (request.reqCnf) {
+          throw createAuthError(AuthErrorCodes_exports.unexpectedError, this.correlationId, "Unexpected preexisting DPoP request key.");
+        }
+        if (!request.keyId) {
+          request.keyId = yield this.tokenBindingKeyManager.provisionTokenBindingKey({
+            tokenBindingKeyType: Constants_exports.AuthenticationScheme.DPOP.toLowerCase(),
+            tokenBindingKeyAlgorithm: JsonWebTokenAlgorithms.ES256,
+            correlationId: this.correlationId
+          });
+        }
+        request.reqCnf = this.createDpopBrokerReqCnf(request.keyId);
+      });
+    }
+    /**
+     * Creates the confirmation claim for an MSAL-owned broker DPoP key.
+     * @param keyId - Browser-managed DPoP key identifier.
+     * @returns Encoded broker confirmation claim.
+     */
+    createDpopBrokerReqCnf(keyId) {
+      return this.browserCrypto.base64UrlEncode(JSON.stringify({
+        kid: keyId,
+        xms_ksl: _PlatformAuthInteractionClient.MSAL_DPOP_KEY_STORAGE_LOCATION
+      }));
+    }
+    /**
+     * Ensures an owned DPoP key can survive redirect navigation before the
+     * request metadata is persisted for phase two.
+     */
+    ensureRedirectDpopKeyIsPersisted(request) {
+      return __async(this, null, function* () {
+        if (!this.isDpopBrokerRequest(request) || !request.keyId) {
+          return;
+        }
+        if (!(yield isTokenBindingKeyPersistedForRedirect(request, this.tokenBindingKeyManager))) {
+          throw createAuthError(AuthErrorCodes_exports.unexpectedError, this.correlationId, "DPoP request key could not be persisted for redirect.");
+        }
+      });
+    }
+    /**
+     * Validates and normalizes the DPoP binding outcome returned by the broker.
+     * @param response - Broker response to validate.
+     * @param request - Broker request associated with the response.
+     * @returns The validated DPoP binding level, or `none` for non-DPoP requests.
+     */
+    validateDpopBrokerOutcome(response, request) {
+      var _a, _b;
+      const isDpopRequest = this.isDpopBrokerRequest(request);
+      const normalizedResponse = this.normalizeDpopBrokerResponse(response);
+      const normalizedRequestTokenType = (_a = request.tokenType) == null ? void 0 : _a.trim().toLowerCase();
+      const bindingPreferenceSent = (_b = request.bindingPreferenceSent) != null ? _b : request.preferBinding !== void 0;
+      const hasDpopResponse = this.isDpopBrokerTokenType(normalizedResponse.tokenType) || normalizedResponse.proof !== void 0 || normalizedResponse.hasBindingAttested;
+      if (!isDpopRequest) {
+        if (hasDpopResponse) {
+          this.throwInvalidDpopResponse("unexpected_response", "Unexpected DPoP broker response.");
+        }
+        return "none";
+      }
+      if (!this.isDpopBrokerTokenType(normalizedResponse.tokenType)) {
+        this.throwInvalidDpopResponse("unknown_token_type", "Unknown DPoP broker response.");
+      }
+      this.validateNormalizedDpopBrokerResponse(normalizedResponse, bindingPreferenceSent);
+      if (normalizedResponse.tokenType === PlatformAuthTokenType.DPOP_WITH_PROOF.toLowerCase()) {
+        return this.validateDpopBrokerL3Outcome(normalizedRequestTokenType, normalizedResponse);
+      }
+      return this.validateDpopBrokerL1Outcome(request, normalizedRequestTokenType, normalizedResponse, bindingPreferenceSent);
+    }
+    /**
+     * Normalizes the canonical DPoP fields returned under response properties.
+     */
+    normalizeDpopBrokerResponse(response) {
+      const responseProperties = response.properties;
+      const rawTokenType = responseProperties == null ? void 0 : responseProperties.token_type;
+      const tokenType = typeof rawTokenType === "string" ? rawTokenType.trim().toLowerCase() : void 0;
+      const rawBindingAttested = responseProperties == null ? void 0 : responseProperties.binding_attested;
+      let bindingAttested;
+      if (typeof rawBindingAttested === "string") {
+        const normalizedBindingAttested = rawBindingAttested.trim().toLowerCase();
+        if (normalizedBindingAttested === "true") {
+          bindingAttested = true;
+        } else if (normalizedBindingAttested === "false") {
+          bindingAttested = false;
+        }
+      }
+      return {
+        tokenType,
+        proof: responseProperties == null ? void 0 : responseProperties.DPoP,
+        bindingAttested,
+        hasBindingAttested: rawBindingAttested !== void 0,
+        hasMalformedBindingAttested: rawBindingAttested !== void 0 && bindingAttested === void 0
+      };
+    }
+    /**
+     * Validates normalized fields shared by L1 and L3 broker DPoP responses.
+     */
+    validateNormalizedDpopBrokerResponse(normalizedResponse, bindingPreferenceSent) {
+      if (normalizedResponse.hasMalformedBindingAttested) {
+        this.throwInvalidDpopResponse("invalid_attestation", "Conflicting DPoP broker response.");
+      }
+      if (bindingPreferenceSent && normalizedResponse.bindingAttested === void 0) {
+        this.throwInvalidDpopResponse("missing_attestation", "Conflicting DPoP broker response.");
+      }
+    }
+    /**
+     * Validates a broker-returned L3 DPoP proof outcome.
+     */
+    validateDpopBrokerL3Outcome(normalizedRequestTokenType, normalizedResponse) {
+      const dpopWithProofTokenType = PlatformAuthTokenType.DPOP_WITH_PROOF.toLowerCase();
+      if (typeof normalizedResponse.proof !== "string" || normalizedResponse.proof.trim().length === 0) {
+        this.throwInvalidDpopResponse("missing_proof", "Malformed DPoP broker response.");
+      }
+      if (normalizedResponse.bindingAttested !== true) {
+        this.throwInvalidDpopResponse("invalid_attestation", "Malformed DPoP broker response.");
+      }
+      if (normalizedRequestTokenType !== dpopWithProofTokenType || normalizedResponse.tokenType !== dpopWithProofTokenType) {
+        this.throwInvalidDpopResponse("conflicting_fields", "Malformed DPoP broker response.");
+      }
+      this.performanceClient.addFields({
+        "ext.brokerDpopOutcome": "l3",
+        "ext.brokerDpopBindingLevel": "L3"
+      }, this.correlationId);
+      return "L3";
+    }
+    /**
+     * Validates an L1 DPoP outcome that MSAL will sign with its local key.
+     */
+    validateDpopBrokerL1Outcome(request, normalizedRequestTokenType, normalizedResponse, bindingPreferenceSent) {
+      if (normalizedResponse.proof !== void 0) {
+        this.throwInvalidDpopResponse("conflicting_fields", "Malformed DPoP broker L1 response.");
+      }
+      if (normalizedRequestTokenType !== PlatformAuthTokenType.DPOP_WITH_PROOF.toLowerCase()) {
+        this.throwInvalidDpopResponse("conflicting_fields", "Malformed DPoP broker L1 response.");
+      }
+      if (normalizedResponse.bindingAttested !== false && !(!bindingPreferenceSent && normalizedResponse.bindingAttested === void 0)) {
+        this.throwInvalidDpopResponse("invalid_attestation", "Malformed DPoP broker L1 response.");
+      }
+      if (!request.reqCnf || !request.keyId) {
+        this.throwInvalidDpopResponse("missing_l1_binding", "Malformed DPoP broker L1 response.");
+      }
+      this.performanceClient.addFields({
+        "ext.brokerDpopOutcome": "l1",
+        "ext.brokerDpopBindingLevel": "L1"
+      }, this.correlationId);
+      return "L1";
+    }
+    /**
+     * Emits bounded failure telemetry and rejects an invalid DPoP response.
+     */
+    throwInvalidDpopResponse(failureReason, message) {
+      this.performanceClient.addFields({
+        "ext.brokerDpopOutcome": "invalid_response",
+        "ext.brokerDpopFailureReason": failureReason
+      }, this.correlationId);
+      throw createAuthError(AuthErrorCodes_exports.unexpectedError, this.correlationId, message);
+    }
+    /**
+     * Returns the broker proof or signs an L1 resource proof with the local key.
+     * @param response - Broker response containing the access token and optional proof.
+     * @param request - Broker request containing the proof context and local key.
+     * @returns The resource proof for the broker access token.
+     */
+    generateDpopProof(response, request) {
+      return __async(this, null, function* () {
+        var _a, _b;
+        const brokerProof = (_a = response.properties) == null ? void 0 : _a.DPoP;
+        if (brokerProof !== void 0) {
+          return brokerProof;
+        }
+        const dpopProofGenerator = new DpopProofGenerator(this.browserCrypto, this.tokenBindingKeyManager);
+        return dpopProofGenerator.generateResourceProof({
+          htu: request.resourceRequestUri,
+          htm: request.resourceRequestMethod,
+          accessToken: response.access_token,
+          nonce: (_b = request.extraParametersNoCache) == null ? void 0 : _b.pop_nonce
+        }, request.keyId, this.correlationId);
+      });
+    }
+    /**
+     * Removes a generated DPoP request key and clears its request metadata.
+     * @param request - Broker request whose generated key should be removed.
+     */
+    resetGeneratedDpopRequestKey(request) {
+      return __async(this, null, function* () {
+        if (!this.isDpopBrokerRequest(request) || !request.keyId) {
+          return;
+        }
+        const cleanupMeasurement = this.performanceClient.startMeasurement(PlatformAuthDpopKeyCleanup, this.correlationId);
+        this.performanceClient.incrementFields({ "ext.brokerDpopKeyCleanupAttemptCount": 1 }, this.correlationId);
+        try {
+          if (request.keyId && !(yield this.removeDpopKey(request.keyId))) {
+            throw createAuthError(AuthErrorCodes_exports.unexpectedError, this.correlationId, "Failed to remove generated DPoP request key.");
+          }
+          this.performanceClient.addFields({
+            "ext.brokerDpopKeyCleanupOutcome": "succeeded"
+          }, this.correlationId);
+          cleanupMeasurement.end({ success: true });
+          request.keyId = void 0;
+          request.reqCnf = void 0;
+        } catch (error) {
+          this.performanceClient.addFields({
+            "ext.brokerDpopKeyCleanupOutcome": "failed"
+          }, this.correlationId);
+          this.performanceClient.incrementFields({ "ext.brokerDpopKeyCleanupFailureCount": 1 }, this.correlationId);
+          cleanupMeasurement.end({ success: false }, error);
+          throw error;
+        }
+      });
+    }
+    /**
+     * Attempts to remove a generated DPoP request key without replacing an
+     * existing operation error with a cleanup failure.
+     * @param request - Broker request whose generated key should be removed.
+     */
+    resetGeneratedDpopRequestKeyBestEffort(request) {
+      return __async(this, null, function* () {
+        try {
+          yield this.resetGeneratedDpopRequestKey(request);
+        } catch (e) {
+          this.logger.error("1kxxak", this.correlationId);
+          this.performanceClient.incrementFields({ removeTokenBindingKeyFailure: 1 }, this.correlationId);
+          request.keyId = void 0;
+          request.reqCnf = void 0;
+        }
+      });
+    }
+    /**
+     * Records that a DPoP request is about to be dispatched to the platform broker.
+     * @param request - Broker request about to cross the provider boundary.
+     */
+    addDpopBrokerAttemptTelemetry(request) {
+      if (!this.isDpopBrokerRequest(request)) {
+        return;
+      }
+      this.performanceClient.addFields({
+        "ext.brokerDpopAttempted": 1
+      }, this.correlationId);
+    }
+    /**
+     * Determines whether a request uses the DPoP broker protocol.
+     * @param request - Broker request to inspect.
+     * @returns Whether the request uses a DPoP token type.
+     */
+    isDpopBrokerRequest(request) {
+      return this.isDpopBrokerTokenType(request.tokenType);
+    }
+    /**
+     * Determines whether a token type represents a DPoP broker request.
+     * @param tokenType - Token type to inspect.
+     * @returns Whether the token type is a supported DPoP broker token type.
+     */
+    isDpopBrokerTokenType(tokenType) {
+      const normalizedTokenType = tokenType == null ? void 0 : tokenType.trim().toLowerCase();
+      return normalizedTokenType === PlatformAuthTokenType.DPOP_WITH_PROOF || normalizedTokenType === Constants_exports.AuthenticationScheme.DPOP.toLowerCase();
+    }
+    /**
+     * Removes a DPoP key while reporting cleanup failures.
+     * @param keyId - Identifier of the DPoP key to remove.
+     * @returns Whether the key was removed successfully.
+     */
+    removeDpopKey(keyId) {
+      return __async(this, null, function* () {
+        try {
+          yield this.tokenBindingKeyManager.removeTokenBindingKey(keyId, this.correlationId);
+          return true;
+        } catch (e) {
+          this.logger.error("1w60e4", this.correlationId);
+          return false;
+        }
       });
     }
     getCanonicalAuthority(request) {
@@ -11701,44 +12209,44 @@
       }
     }
     /**
-     * Handles extra broker request parameters
-     * @param request {PlatformAuthRequest}
-     * @private
+     * Handles extra broker request parameters.
+     * @param request - Platform broker request.
+     * @param embeddedClientId - Embedded application client identifier.
      */
     handleExtraBrokerParams(request, embeddedClientId) {
-      var _a, _b, _c, _e;
-      const hasExtraBrokerParams = request.extraParameters && request.extraParameters.hasOwnProperty(AADServerParamKeys_exports.BROKER_CLIENT_ID) && request.extraParameters.hasOwnProperty(AADServerParamKeys_exports.BROKER_REDIRECT_URI) && request.extraParameters.hasOwnProperty(AADServerParamKeys_exports.CLIENT_ID);
+      var _a, _b, _c, _d, _f;
+      const hasOwnParameter = (parameter) => Object.prototype.hasOwnProperty.call(request.extraParameters, parameter);
+      const hasExtraBrokerParams = hasOwnParameter(AADServerParamKeys_exports.BROKER_CLIENT_ID) && hasOwnParameter(AADServerParamKeys_exports.BROKER_REDIRECT_URI) && hasOwnParameter(AADServerParamKeys_exports.CLIENT_ID);
       if (!embeddedClientId && !hasExtraBrokerParams) {
         return;
       }
-      let child_client_id = "";
-      const child_redirect_uri = request.redirectUri;
+      const childRedirectUri = request.redirectUri;
+      const childClientId = embeddedClientId || ((_a = request.extraParameters) == null ? void 0 : _a[AADServerParamKeys_exports.CLIENT_ID]) || "";
       if (embeddedClientId) {
         request.redirectUri = this.config.auth.redirectUri;
-        child_client_id = embeddedClientId;
       } else if (request.extraParameters) {
         request.redirectUri = request.extraParameters[AADServerParamKeys_exports.BROKER_REDIRECT_URI];
-        child_client_id = request.extraParameters[AADServerParamKeys_exports.CLIENT_ID];
       }
-      const _d = request.extraParameters || {}, {
-        [_a = AADServerParamKeys_exports.BROKER_CLIENT_ID]: _brkClientId,
-        [_b = AADServerParamKeys_exports.BROKER_REDIRECT_URI]: _brkRedirectUri,
-        [_c = AADServerParamKeys_exports.CLIENT_ID]: _clientId
-      } = _d, remainingExtraParameters = __objRest(_d, [
-        __restKey(_a),
+      const _e = request.extraParameters || {}, {
+        [_b = AADServerParamKeys_exports.BROKER_CLIENT_ID]: _brkClientId,
+        [_c = AADServerParamKeys_exports.BROKER_REDIRECT_URI]: _brkRedirectUri,
+        [_d = AADServerParamKeys_exports.CLIENT_ID]: _clientId
+      } = _e, remainingExtraParameters = __objRest(_e, [
         __restKey(_b),
-        __restKey(_c)
+        __restKey(_c),
+        __restKey(_d)
       ]);
       request.extraParameters = __spreadProps(__spreadValues({}, remainingExtraParameters), {
-        child_client_id,
-        child_redirect_uri
+        child_client_id: childClientId,
+        child_redirect_uri: childRedirectUri
       });
-      (_e = this.performanceClient) == null ? void 0 : _e.addFields({
-        embeddedClientId: child_client_id,
-        embeddedRedirectUri: child_redirect_uri
+      (_f = this.performanceClient) == null ? void 0 : _f.addFields({
+        embeddedClientId: childClientId,
+        embeddedRedirectUri: childRedirectUri
       }, this.correlationId);
     }
   };
+  PlatformAuthInteractionClient.MSAL_DPOP_KEY_STORAGE_LOCATION = PlatformAuthEnclave.SOFTWARE;
 
   // node_modules/@azure/msal-browser/dist/protocol/Authorize.mjs
   var clientDataAccountTypeMapping = /* @__PURE__ */ new Map([
@@ -11804,7 +12312,7 @@
           RequestParameterBuilder_exports.addPopToken(parameters, request.reqCnf);
         }
       }
-      if (request.authenticationScheme === Constants_exports.AuthenticationScheme.DPOP && request.dpopJkt) {
+      if (request.authenticationScheme === Constants_exports.AuthenticationScheme.DPOP && !request.platformBroker && request.dpopJkt) {
         parameters.set(AADServerParamKeys_exports.DPOP_JKT, request.dpopJkt);
       }
       RequestParameterBuilder_exports.instrumentBrokerParams(parameters, request.correlationId, performanceClient);
@@ -11882,28 +12390,33 @@
     frame.body.appendChild(form);
     return form;
   }
-  function handleResponsePlatformBroker(request, accountId, apiId, config, browserStorage, nativeStorage, eventHandler, logger, performanceClient, platformAuthProvider) {
-    return __async(this, null, function* () {
+  function handleResponsePlatformBroker(_0, _1, _2, _3, _4, _5, _6, _7, _8, _9) {
+    return __async(this, arguments, function* (request, accountId, apiId, config, browserStorage, nativeStorage, eventHandler, logger, performanceClient, platformAuthProvider, tokenBindingKeyManager = new TokenBindingKeyManager(logger, performanceClient)) {
       logger.verbose("11qcow", request.correlationId);
       if (!platformAuthProvider) {
         throw createBrowserAuthError(nativeConnectionNotEstablished, request.correlationId);
       }
       const browserCrypto = new CryptoOps(logger, performanceClient);
-      const nativeInteractionClient = new PlatformAuthInteractionClient(config, browserStorage, browserCrypto, logger, eventHandler, config.system.navigationClient, apiId, performanceClient, platformAuthProvider, accountId, nativeStorage, request.correlationId);
+      const nativeInteractionClient = new PlatformAuthInteractionClient(config, browserStorage, browserCrypto, logger, eventHandler, config.system.navigationClient, apiId, performanceClient, platformAuthProvider, accountId, nativeStorage, request.correlationId, tokenBindingKeyManager);
       const { userRequestState } = ProtocolUtils_exports.parseRequestState(browserCrypto.base64Decode, request.state, request.correlationId);
-      return invokeAsync(nativeInteractionClient.acquireToken.bind(nativeInteractionClient), NativeInteractionClientAcquireToken, logger, performanceClient, request.correlationId)(__spreadProps(__spreadValues({}, request), {
-        state: userRequestState,
-        prompt: void 0
-        // Server should handle the prompt, ideally native broker can do this part silently
-      }));
+      try {
+        return yield invokeAsync(nativeInteractionClient.acquireToken.bind(nativeInteractionClient), NativeInteractionClientAcquireToken, logger, performanceClient, request.correlationId)(__spreadProps(__spreadValues({}, request), {
+          state: userRequestState,
+          prompt: void 0
+          // Server should handle the prompt, ideally native broker can do this part silently
+        }));
+      } catch (e) {
+        yield removeTokenBindingKeyOnFailure(request, tokenBindingKeyManager, logger, performanceClient);
+        throw e;
+      }
     });
   }
-  function handleResponseCode(request, response, codeVerifier, apiId, config, authClient, browserStorage, nativeStorage, eventHandler, logger, performanceClient, platformAuthProvider) {
-    return __async(this, null, function* () {
+  function handleResponseCode(_0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11) {
+    return __async(this, arguments, function* (request, response, codeVerifier, apiId, config, authClient, browserStorage, nativeStorage, eventHandler, logger, performanceClient, platformAuthProvider, tokenBindingKeyManager = new TokenBindingKeyManager(logger, performanceClient)) {
       ThrottlingUtils.removeThrottle(browserStorage, config.auth.clientId, request);
       instrumentClientData(response, request.correlationId, performanceClient);
       if (response.accountId) {
-        return invokeAsync(handleResponsePlatformBroker, HandleResponsePlatformBroker, logger, performanceClient, request.correlationId)(request, response.accountId, apiId, config, browserStorage, nativeStorage, eventHandler, logger, performanceClient, platformAuthProvider);
+        return invokeAsync(handleResponsePlatformBroker, HandleResponsePlatformBroker, logger, performanceClient, request.correlationId)(request, response.accountId, apiId, config, browserStorage, nativeStorage, eventHandler, logger, performanceClient, platformAuthProvider, tokenBindingKeyManager);
       }
       const authCodeRequest = __spreadProps(__spreadValues({}, request), {
         code: response.code || "",
@@ -11914,8 +12427,8 @@
       return result;
     });
   }
-  function handleResponseEAR(request, response, apiId, config, authority, browserStorage, nativeStorage, eventHandler, logger, performanceClient, platformAuthProvider) {
-    return __async(this, null, function* () {
+  function handleResponseEAR(_0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10) {
+    return __async(this, arguments, function* (request, response, apiId, config, authority, browserStorage, nativeStorage, eventHandler, logger, performanceClient, platformAuthProvider, tokenBindingKeyManager = new TokenBindingKeyManager(logger, performanceClient)) {
       ThrottlingUtils.removeThrottle(browserStorage, config.auth.clientId, request);
       instrumentClientData(response, request.correlationId, performanceClient);
       Authorize_exports.validateAuthorizationResponse(response, request.state, request.correlationId);
@@ -11927,9 +12440,9 @@
       }
       const decryptedData = JSON.parse(yield invokeAsync(decryptEarResponse, DecryptEarResponse, logger, performanceClient, request.correlationId)(request.earJwk, response.ear_jwe));
       if (decryptedData.accountId) {
-        return invokeAsync(handleResponsePlatformBroker, HandleResponsePlatformBroker, logger, performanceClient, request.correlationId)(request, decryptedData.accountId, apiId, config, browserStorage, nativeStorage, eventHandler, logger, performanceClient, platformAuthProvider);
+        return invokeAsync(handleResponsePlatformBroker, HandleResponsePlatformBroker, logger, performanceClient, request.correlationId)(request, decryptedData.accountId, apiId, config, browserStorage, nativeStorage, eventHandler, logger, performanceClient, platformAuthProvider, tokenBindingKeyManager);
       }
-      const responseHandler = new ResponseHandler(config.auth.clientId, browserStorage, new CryptoOps(logger, performanceClient), logger, performanceClient, null, null, new TokenBindingKeyManager(logger, performanceClient));
+      const responseHandler = new ResponseHandler(config.auth.clientId, browserStorage, new CryptoOps(logger, performanceClient), logger, performanceClient, null, null, tokenBindingKeyManager);
       responseHandler.validateTokenResponse(decryptedData, request.correlationId);
       const additionalData = {
         code: "",
@@ -12271,6 +12784,7 @@
           const extensionRequest = __spreadValues({}, request);
           delete extensionRequest.resourceRequestMethod;
           delete extensionRequest.resourceRequestUri;
+          delete extensionRequest.bindingPreferenceSent;
           const messageBody = {
             method: NativeExtensionMethod.GetToken,
             request: extensionRequest
@@ -12282,8 +12796,8 @@
             body: messageBody
           };
           this.logger.trace(`1qadfi ${this.platformAuthType}`, correlationId);
-          this.logger.tracePii(`1xm533 ${this.platformAuthType} ${JSON.stringify(req)}`, correlationId);
           this.messageChannel.port1.postMessage(req);
+          request.bindingPreferenceSent = extensionRequest.preferBinding !== void 0;
           const response = yield new Promise((resolve, reject) => {
             this.resolvers.set(req.responseId, {
               resolve,
@@ -12462,11 +12976,10 @@
           try {
             const response = request.body.response;
             this.logger.trace(`19hpgm ${this.platformAuthType}`, correlationId);
-            this.logger.tracePii(`179a24 ${this.platformAuthType} ${JSON.stringify(response)}`, correlationId);
             if (response.status !== "Success") {
               resolver.reject(createNativeAuthError(response.code, correlationId, response.description, response.ext));
             } else if (response.result) {
-              if (response.result["code"] && response.result["description"]) {
+              if (response.result["code"]) {
                 resolver.reject(createNativeAuthError(response.result["code"], correlationId, response.result["description"], response.result["ext"]));
               } else {
                 resolver.resolve(response.result);
@@ -12532,11 +13045,12 @@
       const responseCorrelationId = this.getCorrelationId(correlationId);
       const validationMeasurement = this.performanceClient.startMeasurement(PlatformAuthExtensionValidateResponse, responseCorrelationId);
       if (response && Object.prototype.hasOwnProperty.call(response, "access_token") && Object.prototype.hasOwnProperty.call(response, "id_token") && Object.prototype.hasOwnProperty.call(response, "client_info") && Object.prototype.hasOwnProperty.call(response, "account") && Object.prototype.hasOwnProperty.call(response, "scope") && Object.prototype.hasOwnProperty.call(response, "expires_in")) {
+        const validatedResponse = response;
         validationMeasurement.end({
           success: true,
           platformAuthProviderType: this.platformAuthType
         });
-        return response;
+        return validatedResponse;
       } else {
         const error = createAuthError(AuthErrorCodes_exports.unexpectedError, responseCorrelationId, "Response missing expected properties.");
         validationMeasurement.end({
@@ -12570,6 +13084,7 @@
   };
 
   // node_modules/@azure/msal-browser/dist/broker/nativeBroker/PlatformAuthDOMHandler.mjs
+  var PLATFORM_AUTH_DOM_DPOP_NOT_SUPPORTED = "platform_auth_dom_dpop_not_supported";
   var PlatformAuthDOMHandler = class _PlatformAuthDOMHandler {
     constructor(logger, performanceClient, correlationId) {
       this.logger = logger;
@@ -12644,6 +13159,7 @@
      */
     sendMessage(request) {
       return __async(this, null, function* () {
+        var _a;
         const correlationId = this.getCorrelationId(request.correlationId);
         const sendMessageMeasurement = this.performanceClient.startMeasurement(PlatformAuthDOMGetToken, correlationId);
         sendMessageMeasurement.add({
@@ -12651,6 +13167,9 @@
         });
         this.logger.trace(`02bcil ${this.platformAuthType}`, correlationId);
         try {
+          if (((_a = request.tokenType) == null ? void 0 : _a.trim().toLowerCase()) === PlatformAuthTokenType.DPOP_WITH_PROOF) {
+            throw createBrowserAuthError(PLATFORM_AUTH_DOM_DPOP_NOT_SUPPORTED, correlationId);
+          }
           const platformDOMRequest = invoke(this.initializePlatformDOMRequest.bind(this), PlatformAuthDOMInitializeRequest, this.logger, this.performanceClient, correlationId)(request);
           const response = (
             // @ts-ignore
@@ -12678,6 +13197,7 @@
       this.logger.trace(`15d6yv ${this.platformAuthType}`, requestCorrelationId);
       delete remainingProperties.resourceRequestMethod;
       delete remainingProperties.resourceRequestUri;
+      delete remainingProperties.bindingPreferenceSent;
       const validExtraParameters = this.getDOMExtraParams(remainingProperties, requestCorrelationId);
       const platformDOMRequest = {
         accountId,
@@ -12855,7 +13375,7 @@
   }
   function isPlatformAuthAllowed(config, logger, correlationId, platformAuthProvider, authenticationScheme, performanceClient) {
     logger.trace("0uko3r", correlationId);
-    const schemeSupported = !authenticationScheme || authenticationScheme === Constants_exports.AuthenticationScheme.BEARER || authenticationScheme === Constants_exports.AuthenticationScheme.POP;
+    const schemeSupported = !authenticationScheme || authenticationScheme === Constants_exports.AuthenticationScheme.BEARER || authenticationScheme === Constants_exports.AuthenticationScheme.POP || authenticationScheme === Constants_exports.AuthenticationScheme.DPOP && !(platformAuthProvider instanceof PlatformAuthDOMHandler);
     const fields = __spreadValues({
       allowPlatformBroker: config.system.allowPlatformBroker
     }, config.system.allowPlatformBroker && {
@@ -13010,10 +13530,11 @@
             this.eventHandler.emitEvent(EventType.POPUP_OPENED, correlationId, InteractionType.Popup, { popupWindow }, null);
             const responseString = yield this.waitForPopupResponse(request, popupWindow, popupParams.popupWindowParent);
             const serverParams = invoke(deserializeResponse, DeserializeResponse, this.logger, this.performanceClient, this.correlationId)(responseString, this.config.auth.OIDCOptions.responseMode, this.logger, this.correlationId);
-            return yield invokeAsync(handleResponseCode, HandleResponseCode, this.logger, this.performanceClient, correlationId)(popupRequest, serverParams, pkce.verifier, ApiId.acquireTokenPopup, this.config, authClient, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider);
+            return yield invokeAsync(handleResponseCode, HandleResponseCode, this.logger, this.performanceClient, correlationId)(popupRequest, serverParams, pkce.verifier, ApiId.acquireTokenPopup, this.config, authClient, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider, this.tokenBindingKeyManager);
           }
         } catch (e) {
           (_a = popupParams.popup) == null ? void 0 : _a.close();
+          yield removeTokenBindingKeyOnFailure(popupRequest, this.tokenBindingKeyManager, this.logger, this.performanceClient);
           if (e instanceof AuthError) {
             e.correlationId = this.correlationId;
             serverTelemetryManager.cacheFailedRequest(e);
@@ -13039,21 +13560,26 @@
         }), tokenBindingParams), {
           popupOriginCheckDone: this.getPopupOriginCheckDone(popupParams.popupWindowParent)
         });
-        const popupWindow = yield this.openPostFormPopup(popupRequest, discoveredAuthority, popupParams, correlationId, true);
-        const responseString = yield invokeAsync(this.waitForPopupResponse.bind(this), SilentHandlerMonitorIframeForHash, this.logger, this.performanceClient, correlationId)(popupRequest, popupWindow, popupParams.popupWindowParent);
-        const serverParams = invoke(deserializeResponse, DeserializeResponse, this.logger, this.performanceClient, this.correlationId)(responseString, this.config.auth.OIDCOptions.responseMode, this.logger, this.correlationId);
-        if (!serverParams.ear_jwe && serverParams.code) {
-          const authClient = yield invokeAsync(this.createAuthCodeClient.bind(this), StandardInteractionClientCreateAuthCodeClient, this.logger, this.performanceClient, correlationId)({
-            serverTelemetryManager: initializeServerTelemetryManager(ApiId.acquireTokenPopup, this.config.auth.clientId, correlationId, this.browserStorage, this.logger, void 0, this.config.system.serverTelemetryEnabled),
-            requestAuthority: request.authority,
-            requestAzureCloudOptions: request.azureCloudOptions,
-            requestExtraQueryParameters: request.extraQueryParameters,
-            account: request.account,
-            authority: discoveredAuthority
-          });
-          return invokeAsync(handleResponseCode, HandleResponseCode, this.logger, this.performanceClient, correlationId)(popupRequest, serverParams, pkce.verifier, ApiId.acquireTokenPopup, this.config, authClient, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider);
-        } else {
-          return invokeAsync(handleResponseEAR, HandleResponseEar, this.logger, this.performanceClient, correlationId)(popupRequest, serverParams, ApiId.acquireTokenPopup, this.config, discoveredAuthority, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider);
+        try {
+          const popupWindow = yield this.openPostFormPopup(popupRequest, discoveredAuthority, popupParams, correlationId, true);
+          const responseString = yield invokeAsync(this.waitForPopupResponse.bind(this), SilentHandlerMonitorIframeForHash, this.logger, this.performanceClient, correlationId)(popupRequest, popupWindow, popupParams.popupWindowParent);
+          const serverParams = invoke(deserializeResponse, DeserializeResponse, this.logger, this.performanceClient, this.correlationId)(responseString, this.config.auth.OIDCOptions.responseMode, this.logger, this.correlationId);
+          if (!serverParams.ear_jwe && serverParams.code) {
+            const authClient = yield invokeAsync(this.createAuthCodeClient.bind(this), StandardInteractionClientCreateAuthCodeClient, this.logger, this.performanceClient, correlationId)({
+              serverTelemetryManager: initializeServerTelemetryManager(ApiId.acquireTokenPopup, this.config.auth.clientId, correlationId, this.browserStorage, this.logger, void 0, this.config.system.serverTelemetryEnabled),
+              requestAuthority: request.authority,
+              requestAzureCloudOptions: request.azureCloudOptions,
+              requestExtraQueryParameters: request.extraQueryParameters,
+              account: request.account,
+              authority: discoveredAuthority
+            });
+            return yield invokeAsync(handleResponseCode, HandleResponseCode, this.logger, this.performanceClient, correlationId)(popupRequest, serverParams, pkce.verifier, ApiId.acquireTokenPopup, this.config, authClient, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider, this.tokenBindingKeyManager);
+          } else {
+            return yield invokeAsync(handleResponseEAR, HandleResponseEar, this.logger, this.performanceClient, correlationId)(popupRequest, serverParams, ApiId.acquireTokenPopup, this.config, discoveredAuthority, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider, this.tokenBindingKeyManager);
+          }
+        } catch (e) {
+          yield removeTokenBindingKeyOnFailure(popupRequest, this.tokenBindingKeyManager, this.logger, this.performanceClient);
+          throw e;
         }
       });
     }
@@ -13064,7 +13590,7 @@
         const popupWindow = yield this.openPostFormPopup(request, discoveredAuthority, popupParams, correlationId, false);
         const responseString = yield invokeAsync(this.waitForPopupResponse.bind(this), SilentHandlerMonitorIframeForHash, this.logger, this.performanceClient, correlationId)(request, popupWindow, popupParams.popupWindowParent);
         const serverParams = invoke(deserializeResponse, DeserializeResponse, this.logger, this.performanceClient, this.correlationId)(responseString, this.config.auth.OIDCOptions.responseMode, this.logger, this.correlationId);
-        return invokeAsync(handleResponseCode, HandleResponseCode, this.logger, this.performanceClient, correlationId)(request, serverParams, pkceVerifier, ApiId.acquireTokenPopup, this.config, authClient, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider);
+        return invokeAsync(handleResponseCode, HandleResponseCode, this.logger, this.performanceClient, correlationId)(request, serverParams, pkceVerifier, ApiId.acquireTokenPopup, this.config, authClient, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider, this.tokenBindingKeyManager);
       });
     }
     /**
@@ -13385,8 +13911,11 @@
         const redirectRequest = __spreadValues(__spreadProps(__spreadValues({}, request), {
           codeChallenge: pkceCodes.challenge
         }), tokenBindingParams);
-        this.browserStorage.cacheAuthorizeRequest(redirectRequest, this.correlationId, pkceCodes.verifier);
         try {
+          if (!(yield isTokenBindingKeyPersistedForRedirect(redirectRequest, this.tokenBindingKeyManager))) {
+            throw createBrowserAuthError(cryptoKeyNotFound, this.correlationId);
+          }
+          this.browserStorage.cacheAuthorizeRequest(redirectRequest, this.correlationId, pkceCodes.verifier);
           if (redirectRequest.httpMethod === Constants_exports.HttpMethod.POST) {
             return yield this.executeCodeFlowWithPost(redirectRequest);
           } else {
@@ -13401,6 +13930,7 @@
             return yield this.initiateAuthRequest(navigateUrl);
           }
         } catch (e) {
+          yield removeTokenBindingKeyOnFailure(redirectRequest, this.tokenBindingKeyManager, this.logger, this.performanceClient);
           if (e instanceof AuthError) {
             e.correlationId = this.correlationId;
             serverTelemetryManager.cacheFailedRequest(e);
@@ -13424,14 +13954,22 @@
           earJwk,
           codeChallenge: pkceCodes.challenge
         }), tokenBindingParams);
-        this.browserStorage.cacheAuthorizeRequest(redirectRequest, this.correlationId, pkceCodes.verifier);
-        const form = yield getEARForm(document, this.config, discoveredAuthority, redirectRequest, this.logger, this.performanceClient);
-        form.submit();
-        return new Promise((resolve, reject) => {
-          setTimeout(() => {
-            reject(createBrowserAuthError(timedOut, "", "failed_to_redirect"));
-          }, this.config.system.redirectNavigationTimeout);
-        });
+        try {
+          if (!(yield isTokenBindingKeyPersistedForRedirect(redirectRequest, this.tokenBindingKeyManager))) {
+            throw createBrowserAuthError(cryptoKeyNotFound, this.correlationId);
+          }
+          this.browserStorage.cacheAuthorizeRequest(redirectRequest, this.correlationId, pkceCodes.verifier);
+          const form = yield getEARForm(document, this.config, discoveredAuthority, redirectRequest, this.logger, this.performanceClient);
+          form.submit();
+          return yield new Promise((resolve, reject) => {
+            setTimeout(() => {
+              reject(createBrowserAuthError(timedOut, "", "failed_to_redirect"));
+            }, this.config.system.redirectNavigationTimeout);
+          });
+        } catch (e) {
+          yield removeTokenBindingKeyOnFailure(redirectRequest, this.tokenBindingKeyManager, this.logger, this.performanceClient);
+          throw e;
+        }
       });
     }
     /**
@@ -13473,6 +14011,7 @@
           const [serverParams, responseString] = this.getRedirectResponse((options == null ? void 0 : options.hash) || "");
           if (!serverParams) {
             this.logger.info("1qmv0q", this.correlationId);
+            yield removeTokenBindingKeyOnFailure(request, this.tokenBindingKeyManager, this.logger, this.performanceClient);
             this.browserStorage.resetRequestCache(this.correlationId);
             if (getNavigationType() !== "back_forward") {
               parentMeasurement.event.errorCode = "no_server_response";
@@ -13517,6 +14056,7 @@
           }
           return null;
         } catch (e) {
+          yield removeTokenBindingKeyOnFailure(request, this.tokenBindingKeyManager, this.logger, this.performanceClient);
           if (e instanceof AuthError) {
             e.correlationId = this.correlationId;
             serverTelemetryManager.cacheFailedRequest(e);
@@ -13580,10 +14120,10 @@
         const { authority, azureCloudOptions, extraQueryParameters, account } = request;
         if (serverParams.ear_jwe) {
           const discoveredAuthority = yield invokeAsync(getDiscoveredAuthority, StandardInteractionClientGetDiscoveredAuthority, this.logger, this.performanceClient, request.correlationId)(this.config, this.correlationId, this.performanceClient, this.browserStorage, this.logger, authority, azureCloudOptions, extraQueryParameters, account);
-          return invokeAsync(handleResponseEAR, HandleResponseEar, this.logger, this.performanceClient, request.correlationId)(request, serverParams, ApiId.acquireTokenRedirect, this.config, discoveredAuthority, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider);
+          return invokeAsync(handleResponseEAR, HandleResponseEar, this.logger, this.performanceClient, request.correlationId)(request, serverParams, ApiId.acquireTokenRedirect, this.config, discoveredAuthority, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider, this.tokenBindingKeyManager);
         }
         const authClient = yield invokeAsync(this.createAuthCodeClient.bind(this), StandardInteractionClientCreateAuthCodeClient, this.logger, this.performanceClient, this.correlationId)({ serverTelemetryManager, requestAuthority: request.authority });
-        return invokeAsync(handleResponseCode, HandleResponseCode, this.logger, this.performanceClient, request.correlationId)(request, serverParams, codeVerifier, ApiId.acquireTokenRedirect, this.config, authClient, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider);
+        return invokeAsync(handleResponseCode, HandleResponseCode, this.logger, this.performanceClient, request.correlationId)(request, serverParams, codeVerifier, ApiId.acquireTokenRedirect, this.config, authClient, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider, this.tokenBindingKeyManager);
       });
     }
     /**
@@ -13866,9 +14406,9 @@
             account: request.account,
             authority: discoveredAuthority
           });
-          return invokeAsync(handleResponseCode, HandleResponseCode, this.logger, this.performanceClient, correlationId)(silentRequest, serverParams, pkceCodes.verifier, this.apiId, this.config, authClient, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider);
+          return invokeAsync(handleResponseCode, HandleResponseCode, this.logger, this.performanceClient, correlationId)(silentRequest, serverParams, pkceCodes.verifier, this.apiId, this.config, authClient, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider, this.tokenBindingKeyManager);
         } else {
-          return invokeAsync(handleResponseEAR, HandleResponseEar, this.logger, this.performanceClient, correlationId)(silentRequest, serverParams, this.apiId, this.config, discoveredAuthority, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider);
+          return invokeAsync(handleResponseEAR, HandleResponseEar, this.logger, this.performanceClient, correlationId)(silentRequest, serverParams, this.apiId, this.config, discoveredAuthority, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider, this.tokenBindingKeyManager);
         }
       });
     }
@@ -13918,7 +14458,12 @@
     silentTokenHelper(authClient, request) {
       return __async(this, null, function* () {
         const { serverParams, pkceCodes, silentRequest } = yield this.silentAuthorizeHelper(authClient, request);
-        return invokeAsync(handleResponseCode, HandleResponseCode, this.logger, this.performanceClient, request.correlationId)(silentRequest, serverParams, pkceCodes.verifier, this.apiId, this.config, authClient, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider);
+        try {
+          return yield invokeAsync(handleResponseCode, HandleResponseCode, this.logger, this.performanceClient, request.correlationId)(silentRequest, serverParams, pkceCodes.verifier, this.apiId, this.config, authClient, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider, this.tokenBindingKeyManager);
+        } catch (e) {
+          yield removeTokenBindingKeyOnFailure(silentRequest, this.tokenBindingKeyManager, this.logger, this.performanceClient);
+          throw e;
+        }
       });
     }
     /**
@@ -13935,25 +14480,30 @@
         const silentRequest = __spreadValues(__spreadProps(__spreadValues({}, request), {
           codeChallenge: pkceCodes.challenge
         }), tokenBindingParams);
-        const iframe = createHiddenIframe();
-        const responseType = this.config.auth.OIDCOptions.responseMode;
-        let responseString;
         try {
-          const responsePromise = invokeAsync(this.waitForIframeResponse.bind(this), SilentHandlerMonitorIframeForHash, this.logger, this.performanceClient, correlationId)(iframe, request);
-          responsePromise.catch(() => {
-          });
-          if (request.httpMethod === Constants_exports.HttpMethod.POST) {
-            yield invokeAsync(initiateCodeFlowWithPost, SilentHandlerInitiateAuthRequest, this.logger, this.performanceClient, correlationId)(iframe, this.config, authClient.authority, silentRequest, this.logger, this.performanceClient);
-          } else {
-            const navigateUrl = yield invokeAsync(getAuthCodeRequestUrl, PerformanceEvents_exports.GetAuthCodeUrl, this.logger, this.performanceClient, correlationId)(this.config, authClient.authority, silentRequest, this.logger, this.performanceClient);
-            yield invokeAsync(initiateCodeRequest, SilentHandlerInitiateAuthRequest, this.logger, this.performanceClient, correlationId)(iframe, navigateUrl, this.logger, correlationId);
+          const iframe = createHiddenIframe();
+          const responseType = this.config.auth.OIDCOptions.responseMode;
+          let responseString;
+          try {
+            const responsePromise = invokeAsync(this.waitForIframeResponse.bind(this), SilentHandlerMonitorIframeForHash, this.logger, this.performanceClient, correlationId)(iframe, request);
+            responsePromise.catch(() => {
+            });
+            if (request.httpMethod === Constants_exports.HttpMethod.POST) {
+              yield invokeAsync(initiateCodeFlowWithPost, SilentHandlerInitiateAuthRequest, this.logger, this.performanceClient, correlationId)(iframe, this.config, authClient.authority, silentRequest, this.logger, this.performanceClient);
+            } else {
+              const navigateUrl = yield invokeAsync(getAuthCodeRequestUrl, PerformanceEvents_exports.GetAuthCodeUrl, this.logger, this.performanceClient, correlationId)(this.config, authClient.authority, silentRequest, this.logger, this.performanceClient);
+              yield invokeAsync(initiateCodeRequest, SilentHandlerInitiateAuthRequest, this.logger, this.performanceClient, correlationId)(iframe, navigateUrl, this.logger, correlationId);
+            }
+            responseString = yield responsePromise;
+          } finally {
+            invoke(removeHiddenIframe, RemoveHiddenIframe, this.logger, this.performanceClient, correlationId)(iframe);
           }
-          responseString = yield responsePromise;
-        } finally {
-          invoke(removeHiddenIframe, RemoveHiddenIframe, this.logger, this.performanceClient, correlationId)(iframe);
+          const serverParams = invoke(deserializeResponse, DeserializeResponse, this.logger, this.performanceClient, correlationId)(responseString, responseType, this.logger, this.correlationId);
+          return { serverParams, pkceCodes, silentRequest };
+        } catch (e) {
+          yield removeTokenBindingKeyOnFailure(silentRequest, this.tokenBindingKeyManager, this.logger, this.performanceClient);
+          throw e;
         }
-        const serverParams = invoke(deserializeResponse, DeserializeResponse, this.logger, this.performanceClient, correlationId)(responseString, responseType, this.logger, this.correlationId);
-        return { serverParams, pkceCodes, silentRequest };
       });
     }
     waitForIframeResponse(iframe, request) {
@@ -14175,19 +14725,19 @@
       skipBrokerClaims: request.embeddedClientId ? !!request.skipBrokerClaims : void 0,
       extraParameters: canonicalizeStringDict(request.extraParameters),
       extraQueryParameters: canonicalizeStringDict(request.extraQueryParameters),
-      extraParametersNoCache: canonicalizeStringDict(request.extraParametersNoCache),
       forceRefresh: !!request.forceRefresh,
       cacheLookupPolicy: (_c = request.cacheLookupPolicy) != null ? _c : CacheLookupPolicy.Default
     }));
   }
   function snapshotPlatformSilentRequest(request) {
-    return __spreadProps(__spreadValues({}, request), {
+    const snapshot = __spreadValues({}, request);
+    delete snapshot.extraParametersNoCache;
+    return __spreadProps(__spreadValues({}, snapshot), {
       scopes: [...request.scopes || []],
       account: __spreadValues({}, request.account),
       azureCloudOptions: request.azureCloudOptions ? __spreadValues({}, request.azureCloudOptions) : void 0,
       extraParameters: request.extraParameters ? __spreadValues({}, request.extraParameters) : void 0,
       extraQueryParameters: request.extraQueryParameters ? __spreadValues({}, request.extraQueryParameters) : void 0,
-      extraParametersNoCache: request.extraParametersNoCache ? __spreadValues({}, request.extraParametersNoCache) : void 0,
       attributeTokens: request.attributeTokens ? [...request.attributeTokens] : void 0,
       storeInCache: request.storeInCache ? __spreadValues({}, request.storeInCache) : void 0
     });
@@ -14481,8 +15031,9 @@
           let result;
           const platformAuthProvider = this.platformAuthProvider;
           if (this.canUsePlatformBroker(request) && platformAuthProvider) {
+            const nativeRequest = this.sanitizeNativeBrokerRequest(request, correlationId);
             const nativeClient = new PlatformAuthInteractionClient(this.config, this.browserStorage, this.browserCrypto, this.logger, this.eventHandler, this.navigationClient, ApiId.acquireTokenRedirect, this.performanceClient, platformAuthProvider, this.getNativeAccountId(request), this.nativeInternalStorage, correlationId, this.tokenBindingKeyManager);
-            result = invokeAsync(nativeClient.acquireTokenRedirect.bind(nativeClient), NativeInteractionClientAcquireTokenRedirect, this.logger, this.performanceClient, correlationId)(request, atrMeasurement).catch((e) => {
+            result = invokeAsync(nativeClient.acquireTokenRedirect.bind(nativeClient), NativeInteractionClientAcquireTokenRedirect, this.logger, this.performanceClient, correlationId)(nativeRequest, atrMeasurement).catch((e) => {
               if (e instanceof NativeAuthError && isFatalNativeAuthError(e)) {
                 this.platformAuthProvider = void 0;
                 const redirectClient = this.createRedirectClient(correlationId);
@@ -14974,6 +15525,12 @@
         const correlationId = this.getRequestCorrelationId(logoutRequest);
         redirectPreflightCheck(this.initialized, this.config);
         this.browserStorage.setInteractionInProgress(true, INTERACTION_TYPE.SIGNOUT);
+        try {
+          yield this.clearNativeCache(logoutRequest == null ? void 0 : logoutRequest.account, correlationId);
+        } catch (error) {
+          this.browserStorage.setInteractionInProgress(false);
+          throw error;
+        }
         const redirectClient = this.createRedirectClient(correlationId);
         return redirectClient.logout(logoutRequest);
       });
@@ -14988,7 +15545,9 @@
         preflightCheck(this.initialized);
         this.browserStorage.setInteractionInProgress(true, INTERACTION_TYPE.SIGNOUT);
         const popupClient = this.createPopupClient(correlationId);
-        return popupClient.logout(logoutRequest).finally(() => {
+        const nativeCacheClear = this.clearNativeCache(logoutRequest == null ? void 0 : logoutRequest.account, correlationId);
+        const popupLogout = popupClient.logout(logoutRequest);
+        return Promise.all([nativeCacheClear, popupLogout]).then(() => void 0).finally(() => {
           this.browserStorage.setInteractionInProgress(false);
         });
       } catch (e) {
@@ -15006,7 +15565,29 @@
         }
         const correlationId = this.getRequestCorrelationId(logoutRequest);
         const cacheClient = this.createSilentCacheClient(correlationId);
-        return cacheClient.logout(logoutRequest);
+        const nativeCacheClear = this.clearNativeCache(logoutRequest == null ? void 0 : logoutRequest.account, correlationId);
+        const browserCacheClear = cacheClient.logout(logoutRequest);
+        yield Promise.all([nativeCacheClear, browserCacheClear]);
+      });
+    }
+    clearNativeCache(account, correlationId) {
+      return __async(this, null, function* () {
+        const homeAccountId = account == null ? void 0 : account.homeAccountId.toLowerCase();
+        const environment = account == null ? void 0 : account.environment.toLowerCase();
+        const accessTokenKeys = this.nativeInternalStorage.getTokenKeys().accessToken.filter((key) => {
+          if (!account) {
+            return true;
+          }
+          const accessToken = this.nativeInternalStorage.getAccessTokenCredential(key, correlationId);
+          if (!accessToken) {
+            return false;
+          }
+          return accessToken.homeAccountId.toLowerCase() === homeAccountId && accessToken.environment.toLowerCase() === environment;
+        });
+        yield Promise.all(accessTokenKeys.map((key) => this.nativeInternalStorage.removeAccessTokenAndTokenBindingKey(key, correlationId)));
+        if (!account) {
+          this.nativeInternalStorage.clear(correlationId);
+        }
       });
     }
     // #endregion
@@ -15093,6 +15674,18 @@
     }
     // #region Helpers
     /**
+     * Removes internal DPoP key state from application-originated broker requests.
+     */
+    sanitizeNativeBrokerRequest(request, correlationId) {
+      if (!request.dpopJkt) {
+        return request;
+      }
+      this.logger.warning("0rh2us", correlationId);
+      return __spreadProps(__spreadValues({}, request), {
+        dpopJkt: void 0
+      });
+    }
+    /**
      * Acquire a token from native device (e.g. WAM)
      * @param request
      * @param apiId
@@ -15107,7 +15700,8 @@
           throw createBrowserAuthError(nativeConnectionNotEstablished, correlationId);
         }
         const nativeClient = new PlatformAuthInteractionClient(this.config, this.browserStorage, this.browserCrypto, this.logger, this.eventHandler, this.navigationClient, apiId, this.performanceClient, this.platformAuthProvider, accountId || this.getNativeAccountId(request), this.nativeInternalStorage, correlationId, this.tokenBindingKeyManager);
-        return invokeAsync(nativeClient.acquireToken.bind(nativeClient), NativeInteractionClientAcquireToken, this.logger, this.performanceClient, correlationId)(request, cacheLookupPolicy);
+        const nativeRequest = this.sanitizeNativeBrokerRequest(request, correlationId);
+        return invokeAsync(nativeClient.acquireToken.bind(nativeClient), NativeInteractionClientAcquireToken, this.logger, this.performanceClient, correlationId)(nativeRequest, cacheLookupPolicy);
       });
     }
     /**
@@ -15382,13 +15976,17 @@
           correlationId,
           config: this.config
         }, this.platformAuthProvider, this.logger, this.performanceClient);
-        const inProgressRequest = this.activeSilentTokenRequests.get(preparedRequest.key);
+        const shouldDeduplicate = preparedRequest.request.authenticationScheme !== Constants_exports.AuthenticationScheme.DPOP;
+        const inProgressRequest = shouldDeduplicate ? this.activeSilentTokenRequests.get(preparedRequest.key) : void 0;
         if (typeof inProgressRequest === "undefined") {
-          this.logger.verbose("0fcjbk", correlationId);
+          this.logger.verbose(shouldDeduplicate ? "0fcjbk" : "acquireTokenSilent called for DPoP request, starting an independent operation", correlationId);
           this.performanceClient.addFields({ deduped: false }, correlationId);
           const activeRequest = invokeAsync(this.acquireTokenSilentAsync.bind(this), AcquireTokenSilentAsync, this.logger, this.performanceClient, correlationId)(__spreadProps(__spreadValues({}, preparedRequest.request), {
             correlationId
           }), preparedRequest.account);
+          if (!shouldDeduplicate) {
+            return activeRequest;
+          }
           this.activeSilentTokenRequests.set(preparedRequest.key, activeRequest);
           return activeRequest.finally(() => {
             this.activeSilentTokenRequests.delete(preparedRequest.key);
@@ -17379,7 +17977,7 @@
 @azure/msal-common/dist-browser/network/INetworkModule.mjs:
 @azure/msal-common/dist-browser/request/BaseAuthRequest.mjs:
 @azure/msal-common/dist-browser/index-browser.mjs:
-  (*! @azure/msal-common v16.15.0 2026-10-27 *)
+  (*! @azure/msal-common v16.16.1 2026-11-06 *)
 
 @azure/msal-browser/dist/telemetry/BrowserPerformanceEvents.mjs:
 @azure/msal-browser/dist/error/BrowserAuthError.mjs:
@@ -17459,5 +18057,5 @@
 @azure/msal-browser/dist/utils/IframeMonitor.mjs:
 @azure/msal-browser/dist/app/PublicClientApplication.mjs:
 @azure/msal-browser/dist/index.mjs:
-  (*! @azure/msal-browser v5.27.0 2026-10-27 *)
+  (*! @azure/msal-browser v5.29.0 2026-11-06 *)
 */
