@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.8
+
+- Updated `@azure/msal-browser` to 5.29.0, `express-rate-limit` to 8.7.3, `grapesjs` to 0.23.9, and `jose` to 6.2.15, and rebuilt the committed Outlook add-in bundles.
+- Patched the MJML dependency tree with `glob` 14.0.2 and `minimatch` 11.0.4 overrides to address GHSA-3g3m-2fjr-6pw4 and GHSA-g3hv-75wg-m249 without downgrading MJML.
+
 ## 2.1.7
 
 - Fixed dashboard analytics card spacing so the From-address chart stays near its heading instead of being pushed down by the Outlook client details.

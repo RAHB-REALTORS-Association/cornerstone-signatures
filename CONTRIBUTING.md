@@ -5,3 +5,5 @@ By contributing, you agree that your contribution is licensed under AGPL-3.0-onl
 Use Node.js 24 or later. Create a focused branch, run `npm ci`, `npm run build:addin`, and `npm test`, and do not commit tenant IDs, client secrets, real staff data, generated databases, or `outlook-addin/manifest.xml`. Security issues should follow [SECURITY.md](SECURITY.md), not a public issue.
 
 The production image and release workflow use Node.js 26. CI verifies Node.js 24 and 26. Dependabot groups weekly version updates by npm, GitHub Actions, and Docker; npm and Actions security updates use separate groups. Refresh `package-lock.json` alongside dependency changes and rebuild the committed Outlook bundles when browser dependencies change.
+
+The `glob` and `minimatch` overrides patch transitive MJML dependencies. Keep them until upstream accepts patched versions; verify MJML rendering, CLI compilation, and EditorConfig matching when changing or removing them.
