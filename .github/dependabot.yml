@@ -5,11 +5,13 @@ updates:
     schedule:
       interval: "weekly"
     groups:
-      npm-dependencies:
+      patch-and-minor:
         applies-to: version-updates
+        update-types: ["minor", "patch"]
         patterns: ["*"]
-      npm-security:
+      patch-and-minor-security:
         applies-to: security-updates
+        update-types: ["minor", "patch"]
         patterns: ["*"]
 
   # Maintain dependencies for GitHub Actions
@@ -19,11 +21,13 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 10
     groups:
-      github-actions:
+      patch-and-minor:
         applies-to: version-updates
+        update-types: ["minor", "patch"]
         patterns: ["*"]
-      github-actions-security:
+      patch-and-minor-security:
         applies-to: security-updates
+        update-types: ["minor", "patch"]
         patterns: ["*"]
 
   # Maintain dependencies for Docker
@@ -33,5 +37,6 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 10
     groups:
-      docker-images:
+      patch-and-minor:
+        update-types: ["minor", "patch"]
         patterns: ["*"]
