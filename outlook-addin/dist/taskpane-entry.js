@@ -1060,6 +1060,11 @@
   };
 
   // node_modules/@azure/msal-common/dist-browser/url/UrlString.mjs
+  var UNSAFE_AUTHORITY = /[\x00-\x20\x7f\\@]/;
+  var DEFAULT_PORTS = {
+    "https:": ":443",
+    "http:": ":80"
+  };
   var UrlString = class _UrlString {
     get urlString() {
       return this._urlString;
@@ -1146,6 +1151,7 @@
      * @returns An object with the various components. Please cache this value insted of calling this multiple times on the same url.
      */
     getUrlComponents() {
+      var _a, _b;
       const regEx = RegExp("^(([^:/?#]+):)?(//([^/?#]*))?([^?#]*)(\\?([^#]*))?(#(.*))?");
       const match = this.urlString.match(regEx);
       if (!match) {
@@ -1157,6 +1163,19 @@
         AbsolutePath: match[5],
         QueryString: match[7]
       };
+      let parsedUrl;
+      try {
+        parsedUrl = new URL(this.urlString);
+      } catch {
+        throw createClientConfigurationError(urlParseError, this.correlationId);
+      }
+      const host = (_a = urlComponents.HostNameAndPort) == null ? void 0 : _a.toLowerCase();
+      const schemeAndAuthority = `${urlComponents.Protocol}//${host}`;
+      const defaultPort = (_b = DEFAULT_PORTS[parsedUrl.protocol]) != null ? _b : "";
+      const hostMatches = host === parsedUrl.host || host === `${parsedUrl.host}${defaultPort}` || (host == null ? void 0 : host.startsWith("[")) && new URL(`${urlComponents.Protocol}//${host}`).host === parsedUrl.host;
+      if (UNSAFE_AUTHORITY.test(schemeAndAuthority) || !hostMatches) {
+        throw createClientConfigurationError(urlParseError, this.correlationId);
+      }
       let pathSegments = urlComponents.AbsolutePath.split("/");
       pathSegments = pathSegments.filter((val) => val && val.length > 0);
       urlComponents.PathSegments = pathSegments;
@@ -1410,7 +1429,7 @@
       } catch (e) {
         logger.trace(`0cfd8i ${eventName}`, correlationId);
         try {
-          logger.trace(JSON.stringify(e), correlationId);
+          logger.tracePii(`028ef8 ${JSON.stringify(e)}`, correlationId);
         } catch (e2) {
           logger.trace("00dty7", correlationId);
         }
@@ -1437,7 +1456,7 @@
       }).catch((e) => {
         logger.trace(`0cfd8i ${eventName}`, correlationId);
         try {
-          logger.trace(JSON.stringify(e), correlationId);
+          logger.tracePii(`028ef8 ${JSON.stringify(e)}`, correlationId);
         } catch (e2) {
           logger.trace("00dty7", correlationId);
         }
@@ -1450,6 +1469,12 @@
   };
 
   // node_modules/@azure/msal-common/dist-browser/authority/RegionDiscovery.mjs
+  var REGION_NAME_PATTERN = /^[a-z][a-z0-9-]*$/i;
+  var MAX_REGION_NAME_LENGTH = 63;
+  function isValidRegion(region) {
+    return typeof region === "string" && region.length <= MAX_REGION_NAME_LENGTH && REGION_NAME_PATTERN.test(region) && // Keep the trailing-hyphen rule explicit rather than complicating the pattern.
+    !region.endsWith("-");
+  }
   var RegionDiscovery = class _RegionDiscovery {
     constructor(networkInterface, logger, performanceClient, correlationId) {
       this.networkInterface = networkInterface;
@@ -1496,10 +1521,14 @@
       } else {
         regionDiscoveryMetadata.region_source = RegionDiscoverySources.ENVIRONMENT_VARIABLE;
       }
-      if (!autodetectedRegionName) {
+      if (!autodetectedRegionName || !isValidRegion(autodetectedRegionName)) {
+        if (autodetectedRegionName) {
+          this.logger.warning("0n83q0", this.correlationId);
+        }
         regionDiscoveryMetadata.region_source = RegionDiscoverySources.FAILED_AUTO_DETECTION;
+        return null;
       }
-      return autodetectedRegionName || null;
+      return autodetectedRegionName;
     }
     /**
      * Make the call to the IMDS endpoint
@@ -2479,6 +2508,9 @@
      * @param region string
      */
     static buildRegionalAuthorityString(host, region, correlationId, queryString) {
+      if (!isValidRegion(region)) {
+        throw createClientConfigurationError(urlParseError, correlationId);
+      }
       const authorityUrlInstance = new UrlString(host, correlationId);
       authorityUrlInstance.validateAsUri();
       const authorityUrlParts = authorityUrlInstance.getUrlComponents();
@@ -2487,7 +2519,7 @@
         hostNameAndPort = `${region}.${REGIONAL_AUTH_PUBLIC_CLOUD_SUFFIX}`;
       }
       const url = UrlString.constructAuthorityUriFromObject({
-        ...authorityUrlInstance.getUrlComponents(),
+        ...authorityUrlParts,
         HostNameAndPort: hostNameAndPort
       }, correlationId).urlString;
       if (queryString)
@@ -3438,7 +3470,7 @@
 
   // node_modules/@azure/msal-common/dist-browser/packageMetadata.mjs
   var name = "@azure/msal-common";
-  var version = "16.16.1";
+  var version = "16.16.2";
 
   // node_modules/@azure/msal-common/dist-browser/error/CacheErrorCodes.mjs
   var CacheErrorCodes_exports = {};
@@ -5718,7 +5750,7 @@
       if (!request.code) {
         throw createClientAuthError(requestCannotBeMade, request.correlationId);
       }
-      if (authCodePayload && authCodePayload.cloud_instance_host_name) {
+      if (this.config.authOptions.instanceAware === true && (authCodePayload == null ? void 0 : authCodePayload.cloud_instance_host_name)) {
         await invokeAsync(this.updateTokenEndpointAuthority.bind(this), UpdateTokenEndpointAuthority, this.logger, this.performanceClient, request.correlationId)(authCodePayload.cloud_instance_host_name, request.correlationId);
       }
       const reqTimestamp = nowSeconds();
@@ -6041,12 +6073,12 @@
     try {
       decodedServerResponseState = decodeURIComponent(serverResponse.state);
     } catch (e) {
-      throw createClientAuthError(invalidState, correlationId, serverResponse.state);
+      throw createClientAuthError(invalidState, correlationId);
     }
     try {
       decodedRequestState = decodeURIComponent(requestState);
     } catch (e) {
-      throw createClientAuthError(invalidState, correlationId, serverResponse.state);
+      throw createClientAuthError(invalidState, correlationId);
     }
     if (decodedServerResponseState !== decodedRequestState) {
       throw createClientAuthError(stateMismatch, correlationId);
@@ -8610,7 +8642,7 @@
 
   // node_modules/@azure/msal-browser/dist/packageMetadata.mjs
   var name2 = "@azure/msal-browser";
-  var version2 = "5.29.0";
+  var version2 = "5.29.1";
 
   // node_modules/@azure/msal-browser/dist/utils/Helpers.mjs
   function removeElementFromArray(array, element) {
@@ -10453,6 +10485,7 @@
      *        }
      */
     async getClientConfiguration(params) {
+      var _a;
       const { serverTelemetryManager, requestAuthority, requestAzureCloudOptions, requestExtraQueryParameters, account } = params;
       const discoveredAuthority = params.authority || await invokeAsync(getDiscoveredAuthority, StandardInteractionClientGetDiscoveredAuthority, this.logger, this.performanceClient, this.correlationId)(this.config, this.correlationId, this.performanceClient, this.browserStorage, this.logger, requestAuthority, requestAzureCloudOptions, requestExtraQueryParameters, account);
       const logger = this.config.system.loggerOptions;
@@ -10461,6 +10494,7 @@
           clientId: this.config.auth.clientId,
           authority: discoveredAuthority,
           clientCapabilities: this.config.auth.clientCapabilities,
+          instanceAware: ((_a = requestExtraQueryParameters == null ? void 0 : requestExtraQueryParameters.instance_aware) == null ? void 0 : _a.length) ? requestExtraQueryParameters.instance_aware === "true" : this.config.auth.instanceAware,
           redirectUri: this.config.auth.redirectUri,
           isMcp: this.config.auth.isMcp
         },
@@ -13766,7 +13800,11 @@
         const discoveredAuthority = await invokeAsync(getDiscoveredAuthority, StandardInteractionClientGetDiscoveredAuthority, this.logger, this.performanceClient, request.correlationId)(this.config, this.correlationId, this.performanceClient, this.browserStorage, this.logger, authority, azureCloudOptions, extraQueryParameters, account);
         return invokeAsync(handleResponseEAR, HandleResponseEar, this.logger, this.performanceClient, request.correlationId)(request, serverParams, ApiId.acquireTokenRedirect, this.config, discoveredAuthority, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider, this.tokenBindingKeyManager);
       }
-      const authClient = await invokeAsync(this.createAuthCodeClient.bind(this), StandardInteractionClientCreateAuthCodeClient, this.logger, this.performanceClient, this.correlationId)({ serverTelemetryManager, requestAuthority: request.authority });
+      const authClient = await invokeAsync(this.createAuthCodeClient.bind(this), StandardInteractionClientCreateAuthCodeClient, this.logger, this.performanceClient, this.correlationId)({
+        serverTelemetryManager,
+        requestAuthority: request.authority,
+        requestExtraQueryParameters: request.extraQueryParameters
+      });
       return invokeAsync(handleResponseCode, HandleResponseCode, this.logger, this.performanceClient, request.correlationId)(request, serverParams, codeVerifier, ApiId.acquireTokenRedirect, this.config, authClient, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider, this.tokenBindingKeyManager);
     }
     /**
@@ -17482,7 +17520,7 @@
 @azure/msal-common/dist-browser/network/INetworkModule.mjs:
 @azure/msal-common/dist-browser/request/BaseAuthRequest.mjs:
 @azure/msal-common/dist-browser/index-browser.mjs:
-  (*! @azure/msal-common v16.16.1 2026-11-06 *)
+  (*! @azure/msal-common v16.16.2 2026-11-12 *)
 
 @azure/msal-browser/dist/telemetry/BrowserPerformanceEvents.mjs:
 @azure/msal-browser/dist/error/BrowserAuthError.mjs:
@@ -17562,5 +17600,5 @@
 @azure/msal-browser/dist/utils/IframeMonitor.mjs:
 @azure/msal-browser/dist/app/PublicClientApplication.mjs:
 @azure/msal-browser/dist/index.mjs:
-  (*! @azure/msal-browser v5.29.0 2026-11-06 *)
+  (*! @azure/msal-browser v5.29.1 2026-11-12 *)
 */

@@ -3,6 +3,16 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
+# Dependabot PRs do not rewrite committed bundles. Always compile the image's
+# assets from its own locked dependencies, without shipping development tools.
+FROM node:26-alpine AS addin-build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY scripts ./scripts
+COPY outlook-addin ./outlook-addin
+RUN npm run build:addin
+
 FROM node:26-alpine AS runtime
 WORKDIR /app
 
@@ -16,6 +26,7 @@ COPY server ./server
 COPY admin ./admin
 COPY static ./static
 COPY outlook-addin ./outlook-addin
+COPY --from=addin-build /app/outlook-addin/dist ./outlook-addin/dist
 COPY index.html README.md ./
 
 RUN mkdir -p /app/data && chown -R node:node /app

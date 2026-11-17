@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.9
+
+- Updated `@azure/msal-browser` to 5.29.1, `express-rate-limit` to 8.7.4, and `jose` to 6.2.17, and rebuilt the committed Outlook add-in bundles.
+- Added verified-commit auto-merging for Dependabot patch/minor groups after both Node CI jobs, dependency auditing, and reported CodeQL/check statuses complete successfully. Ordinary PRs, major updates, and changes beyond dependency version updates remain manual.
+- Rebuild Outlook browser bundles inside the Docker build so future automatically merged MSAL updates cannot ship stale committed bundles. Versioned releases remain tag-driven.
+
 ## 2.1.8
 
 - Updated `@azure/msal-browser` to 5.29.0, `express-rate-limit` to 8.7.3, `grapesjs` to 0.23.9, and `jose` to 6.2.15, and rebuilt the committed Outlook add-in bundles.
