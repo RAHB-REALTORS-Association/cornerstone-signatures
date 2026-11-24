@@ -25,4 +25,17 @@ jobs:
       - run: npm audit
       - run: npm run build:addin
       - run: npm test
-      - run: docker build -t cornerstone-signatures:test .
+      - run: docker build --pull -t cornerstone-signatures:test .
+      - name: Verify runtime image
+        run: |
+          docker run --rm cornerstone-signatures:test sh -ec '
+            test "$(id -u)" != 0
+            test ! -e /usr/local/lib/node_modules/npm
+            for tool in npm npx yarn yarnpkg; do
+              if command -v "$tool"; then
+                echo "$tool must not be shipped in the runtime image" >&2
+                exit 1
+              fi
+            done
+            node --input-type=module -e '\''import { DatabaseSync } from "node:sqlite"; const db = new DatabaseSync(":memory:"); if (db.prepare("SELECT 1 AS ok").get().ok !== 1) process.exit(1); db.close();'\''
+          '

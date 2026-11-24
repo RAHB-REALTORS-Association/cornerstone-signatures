@@ -13,6 +13,10 @@ docker run --env-file .env -p 3000:3000 -v cornerstone-signatures-data:/app/data
 
 The health check is `GET /api/health`. Back up the database from **Manage → Data management** as well as backing up the volume.
 
+Container builds upgrade Alpine packages before installing dependencies. Published images pull the current Node base and rebuild without cached layers so security fixes reach each new image. npm and Yarn are available only in build stages; the runtime starts directly with `node server/index.js`. Use `docker build --pull --no-cache` when rebuilding locally for an OS security update.
+
+Image scan findings may come from Alpine packages, application dependencies, or tooling bundled with the Node base image. `npm audit` checks the application dependency tree, not the base image's global npm installation. After deploying a rebuilt image, scan it again and review any remaining findings, including those without an available upstream fix. Preserve `/app/data` throughout the upgrade.
+
 ## 2. Configure Cloudflare Access
 
 Protect `/`, `/admin/*`, and `/api/admin/*`. Set `CLOUDFLARE_TEAM_DOMAIN`, `CLOUDFLARE_ACCESS_AUD`, and the exact browser origins in `ADMIN_ALLOWED_ORIGINS`.
