@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.10
 
 - Upgrade Alpine packages during Docker builds to pick up security fixes independently of the Node base-image release schedule.
 - Remove npm and Yarn from the runtime image, including their separate bundled dependency trees. Application dependencies remain managed by `package-lock.json`.
