@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Upload and deploy the product website in separate dependent jobs to avoid GitHub Pages looking up an artifact before it becomes visible.
+
 ## 2.1.10
 
 - Upgrade Alpine packages during Docker builds to pick up security fixes independently of the Node base-image release schedule.
