@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.10
+
+- Upgrade Alpine packages during Docker builds to pick up security fixes independently of the Node base-image release schedule.
+- Remove npm and Yarn from the runtime image, including their separate bundled dependency trees. Application dependencies remain managed by `package-lock.json`.
+- Pull fresh base images and disable cached layers for published images; verify the non-root runtime, package-manager removal, and SQLite support in CI.
+
 ## 2.1.9
 
 - Updated `@azure/msal-browser` to 5.29.1, `express-rate-limit` to 8.7.4, and `jose` to 6.2.17, and rebuilt the committed Outlook add-in bundles.

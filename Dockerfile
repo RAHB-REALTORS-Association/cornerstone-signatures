@@ -1,11 +1,15 @@
-FROM node:26-alpine AS dependencies
+FROM node:26-alpine AS base
+# Refresh OS fixes even when the upstream Node image has not been rebuilt yet.
+RUN apk upgrade --no-cache
+
+FROM base AS dependencies
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 # Dependabot PRs do not rewrite committed bundles. Always compile the image's
 # assets from its own locked dependencies, without shipping development tools.
-FROM node:26-alpine AS addin-build
+FROM base AS addin-build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -13,8 +17,13 @@ COPY scripts ./scripts
 COPY outlook-addin ./outlook-addin
 RUN npm run build:addin
 
-FROM node:26-alpine AS runtime
+FROM base AS runtime
 WORKDIR /app
+
+# Package managers are build tools; their bundled dependency trees are not
+# covered by the application's lockfile and are unnecessary at runtime.
+RUN rm -rf /usr/local/lib/node_modules/npm /opt/yarn-* \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/yarn /usr/local/bin/yarnpkg
 
 ENV NODE_ENV=production \
     PORT=3000 \
