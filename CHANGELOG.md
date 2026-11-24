@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 2.1.11
 
+- Updated `@azure/msal-browser` to 5.30.0, `express-rate-limit` to 8.7.5, and `jose` to 6.2.18, and rebuilt the committed Outlook add-in bundles.
 - Upload and deploy the product website in separate dependent jobs to avoid GitHub Pages looking up an artifact before it becomes visible.
 
 ## 2.1.10

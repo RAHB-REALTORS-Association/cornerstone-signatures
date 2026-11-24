@@ -3095,10 +3095,10 @@
       parameters.set(BROKER_REDIRECT_URI, brokerRedirectUri);
     }
   }
-  function addEARParameters(parameters, jwk) {
+  function addEARParameters(parameters, jwk, jweCrypto) {
     parameters.set(EAR_JWK, encodeURIComponent(jwk));
     const jweCryptoB64Encoded = "eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0";
-    parameters.set(EAR_JWE_CRYPTO, jweCryptoB64Encoded);
+    parameters.set(EAR_JWE_CRYPTO, jweCrypto != null ? jweCrypto : jweCryptoB64Encoded);
   }
   function addResource(parameters, resource) {
     if (resource) {
@@ -3470,7 +3470,7 @@
 
   // node_modules/@azure/msal-common/dist-browser/packageMetadata.mjs
   var name = "@azure/msal-common";
-  var version = "16.16.2";
+  var version = "16.17.0";
 
   // node_modules/@azure/msal-common/dist-browser/error/CacheErrorCodes.mjs
   var CacheErrorCodes_exports = {};
@@ -6756,6 +6756,13 @@
   var Encrypt = "encrypt";
   var Decrypt = "decrypt";
   var GenerateEarKey = "generateEarKey";
+  var GenerateAsymmetricEarKey = "generateAsymmetricEarKey";
+  var ImportAsymmetricEarKey = "importAsymmetricEarKey";
+  var ImportAsymmetricEarPublicKey = "importAsymmetricEarPublicKey";
+  var DeriveAsymmetricEarSecret = "deriveAsymmetricEarSecret";
+  var AsymmetricEarConcatKdf = "asymmetricEarConcatKdf";
+  var ImportAsymmetricEarContentKey = "importAsymmetricEarContentKey";
+  var DecryptAsymmetricEarResponse = "decryptAsymmetricEarResponse";
   var DecryptEarResponse = "decryptEarResponse";
   var WaitForBridgeLateResponse = "waitForBridgeLateResponse";
 
@@ -6824,6 +6831,7 @@
   var failedToBuildHeaders = "failed_to_build_headers";
   var failedToParseHeaders = "failed_to_parse_headers";
   var failedToDecryptEarResponse = "failed_to_decrypt_ear_response";
+  var asymmetricEarKeyError = "asymmetric_ear_key_error";
   var timedOut = "timed_out";
   var emptyResponse = "empty_response";
 
@@ -7022,6 +7030,10 @@
   var HKDF = "HKDF";
   var S256_HASH_ALG = "SHA-256";
   var JSON_WEB_KEY_CURVE_P256 = "P-256";
+  var ECDH_P384_ALGORITHM = {
+    name: "ECDH",
+    namedCurve: "P-384"
+  };
   var JSON_WEB_KEY_TYPE_EC = "EC";
   var JSON_WEB_KEY_TYPE_RSA = "RSA";
   var MISSING_JWK_KTY_SUBERROR = "missing_jwk_kty";
@@ -7116,6 +7128,9 @@
   async function exportJwk(key) {
     return window.crypto.subtle.exportKey(KEY_FORMAT_JWK, key);
   }
+  async function importJwk(key, extractable, usages, algorithm) {
+    return window.crypto.subtle.importKey(KEY_FORMAT_JWK, key, algorithm, extractable, usages);
+  }
   async function sign(key, data, algorithm) {
     return window.crypto.subtle.sign(algorithm, key, data);
   }
@@ -7128,6 +7143,192 @@
       k: keyStr
     };
     return base64Encode(JSON.stringify(jwk));
+  }
+  async function generateAsymmetricEarKey() {
+    const keyPair = await generateKeyPair(true, ["deriveBits"], ECDH_P384_ALGORITHM);
+    const publicJwk = await exportJwk(keyPair.publicKey);
+    const privateJwk = await exportJwk(keyPair.privateKey);
+    return {
+      privateJwk,
+      publicJwk
+    };
+  }
+  async function importAsymmetricEarKey(privateJwk, correlationId = "") {
+    if ((privateJwk == null ? void 0 : privateJwk.kty) !== "EC" || privateJwk.crv !== "P-384" || !privateJwk.d) {
+      throw createBrowserAuthError(
+        asymmetricEarKeyError,
+        correlationId,
+        "invalid_private_key"
+        /* AsymmetricEarSubErrors.InvalidPrivateKey */
+      );
+    }
+    try {
+      return await importJwk(privateJwk, false, ["deriveBits"], ECDH_P384_ALGORITHM);
+    } catch {
+      throw createBrowserAuthError(
+        asymmetricEarKeyError,
+        correlationId,
+        "private_key_import_failed"
+        /* AsymmetricEarSubErrors.PrivateKeyImportFailed */
+      );
+    }
+  }
+  function generateAsymmetricEarApv(publicJwk) {
+    const point = new Uint8Array(concatEarBytes(new Uint8Array([4]), decodeEarBase64Url(publicJwk.x || ""), decodeEarBase64Url(publicJwk.y || "")));
+    if (point.length !== 97) {
+      throw createBrowserAuthError(
+        asymmetricEarKeyError,
+        "",
+        "invalid_public_key_coordinates"
+        /* AsymmetricEarSubErrors.InvalidPublicKeyCoordinates */
+      );
+    }
+    const nonce = new Uint8Array(24);
+    window.crypto.getRandomValues(nonce);
+    return urlEncodeArr(new Uint8Array(concatEarBytes(lengthPrefixEarBytes(new TextEncoder().encode("EarClient")), lengthPrefixEarBytes(point), lengthPrefixEarBytes(nonce))));
+  }
+  async function decryptAsymmetricEarResponse(privateJwk, apv, earJwe, requestApv = apv, telemetry) {
+    var _a;
+    const correlationId = (telemetry == null ? void 0 : telemetry.correlationId) || "";
+    const measure = (eventName, operation) => telemetry ? invokeAsync(operation, eventName, telemetry.logger, telemetry.performanceClient, correlationId)() : operation();
+    if (apv !== requestApv) {
+      throw createBrowserAuthError(
+        asymmetricEarKeyError,
+        correlationId,
+        "request_apv_mismatch"
+        /* AsymmetricEarSubErrors.RequestApvMismatch */
+      );
+    }
+    const parts = earJwe.split(".");
+    if (parts.length !== 5 || parts[1] !== "") {
+      throw createBrowserAuthError(
+        failedToDecryptEarResponse,
+        correlationId,
+        "invalid_jwe_format_or_header"
+        /* AsymmetricEarSubErrors.InvalidJweFormatOrHeader */
+      );
+    }
+    let header;
+    try {
+      header = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(decodeEarBase64Url(parts[0], correlationId)));
+    } catch {
+      throw createBrowserAuthError(
+        failedToDecryptEarResponse,
+        correlationId,
+        "invalid_jwe_format_or_header"
+        /* AsymmetricEarSubErrors.InvalidJweFormatOrHeader */
+      );
+    }
+    if (!header || header.alg !== "ECDH-ES" || header.enc !== "A256GCM" || header.crit !== void 0 || header.zip !== void 0 || ((_a = header.epk) == null ? void 0 : _a.kty) !== "EC" || header.epk.crv !== "P-384" || header.epk.d !== void 0 || header.apv !== void 0 && header.apv !== apv) {
+      throw createBrowserAuthError(
+        failedToDecryptEarResponse,
+        correlationId,
+        "invalid_jwe_format_or_header"
+        /* AsymmetricEarSubErrors.InvalidJweFormatOrHeader */
+      );
+    }
+    const x = decodeEarBase64Url(header.epk.x, correlationId);
+    const y = decodeEarBase64Url(header.epk.y, correlationId);
+    const apuBytes = decodeEarBase64Url(header.apu, correlationId);
+    const apvBytes = decodeEarBase64Url(apv, correlationId);
+    const iv = decodeEarBase64Url(parts[2], correlationId);
+    const ciphertext = decodeEarBase64Url(parts[3], correlationId);
+    const tag = decodeEarBase64Url(parts[4], correlationId);
+    if (x.length !== 48 || y.length !== 48 || iv.length !== 12 || tag.length !== 16) {
+      throw createBrowserAuthError(
+        failedToDecryptEarResponse,
+        correlationId,
+        "invalid_jwe_format_or_header"
+        /* AsymmetricEarSubErrors.InvalidJweFormatOrHeader */
+      );
+    }
+    let key;
+    try {
+      const privateKey = await measure(ImportAsymmetricEarKey, () => importAsymmetricEarKey(privateJwk, correlationId));
+      const publicKey = await measure(ImportAsymmetricEarPublicKey, () => importJwk({
+        kty: "EC",
+        crv: "P-384",
+        x: header.epk.x,
+        y: header.epk.y
+      }, false, [], ECDH_P384_ALGORITHM));
+      const secret = new Uint8Array(await measure(DeriveAsymmetricEarSecret, () => window.crypto.subtle.deriveBits({ name: "ECDH", public: publicKey }, privateKey, 384)));
+      const input = new Uint8Array(concatEarBytes(earUint32(1), secret, lengthPrefixEarBytes(new TextEncoder().encode("A256GCM")), lengthPrefixEarBytes(apuBytes), lengthPrefixEarBytes(apvBytes), earUint32(256)));
+      let derivedKey;
+      try {
+        derivedKey = await measure(AsymmetricEarConcatKdf, () => window.crypto.subtle.digest(S256_HASH_ALG, input));
+      } finally {
+        secret.fill(0);
+        input.fill(0);
+      }
+      try {
+        key = await measure(ImportAsymmetricEarContentKey, () => window.crypto.subtle.importKey(RAW, derivedKey, AES_GCM, false, [DECRYPT]));
+      } finally {
+        new Uint8Array(derivedKey).fill(0);
+      }
+    } catch (error) {
+      if (error instanceof AuthError) {
+        throw error;
+      }
+      throw createBrowserAuthError(
+        failedToDecryptEarResponse,
+        correlationId,
+        "content_encryption_key_derivation_failed"
+        /* AsymmetricEarSubErrors.ContentEncryptionKeyDerivationFailed */
+      );
+    }
+    try {
+      const plaintext = await measure(DecryptAsymmetricEarResponse, () => window.crypto.subtle.decrypt({
+        name: AES_GCM,
+        iv,
+        tagLength: 128,
+        additionalData: new TextEncoder().encode(parts[0])
+      }, key, concatEarBytes(ciphertext, tag)));
+      return new TextDecoder("utf-8", { fatal: true }).decode(plaintext);
+    } catch {
+      throw createBrowserAuthError(
+        failedToDecryptEarResponse,
+        correlationId,
+        "jwe_decryption_failed"
+        /* AsymmetricEarSubErrors.JweDecryptionFailed */
+      );
+    }
+  }
+  function decodeEarBase64Url(value, correlationId = "") {
+    if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/.test(value)) {
+      throw createBrowserAuthError(
+        failedToDecryptEarResponse,
+        correlationId,
+        "invalid_jwe_format_or_header"
+        /* AsymmetricEarSubErrors.InvalidJweFormatOrHeader */
+      );
+    }
+    const bytes = new Uint8Array(base64DecToArr(value));
+    if (urlEncodeArr(bytes) !== value) {
+      throw createBrowserAuthError(
+        failedToDecryptEarResponse,
+        correlationId,
+        "invalid_jwe_format_or_header"
+        /* AsymmetricEarSubErrors.InvalidJweFormatOrHeader */
+      );
+    }
+    return bytes;
+  }
+  function earUint32(value) {
+    const bytes = new Uint8Array(4);
+    new DataView(bytes.buffer).setUint32(0, value);
+    return bytes;
+  }
+  function concatEarBytes(...parts) {
+    const bytes = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
+    let offset = 0;
+    for (const part of parts) {
+      bytes.set(part, offset);
+      offset += part.length;
+    }
+    return bytes.buffer;
+  }
+  function lengthPrefixEarBytes(bytes) {
+    return new Uint8Array(concatEarBytes(earUint32(bytes.length), bytes));
   }
   async function importEarKey(earJwk) {
     const b64DecodedJwk = base64Decode(earJwk);
@@ -8642,7 +8843,7 @@
 
   // node_modules/@azure/msal-browser/dist/packageMetadata.mjs
   var name2 = "@azure/msal-browser";
-  var version2 = "5.29.1";
+  var version2 = "5.30.0";
 
   // node_modules/@azure/msal-browser/dist/utils/Helpers.mjs
   function removeElementFromArray(array, element) {
@@ -9815,8 +10016,7 @@
           verifier = base64Decode(encodedVerifier);
         }
       } catch (e) {
-        this.logger.errorPii(`0ewsey ${encodedTokenRequest}`, correlationId);
-        this.logger.error(`0tvdic ${e}`, correlationId);
+        this.logger.error("023ixj", correlationId);
         throw createBrowserAuthError(unableToParseTokenRequestCacheError, "");
       }
       return [parsedRequest, verifier];
@@ -10586,28 +10786,52 @@
 
   // node_modules/@azure/msal-browser/dist/popup_relay/constants.mjs
   var POPUP_RELAY_RESPONSE_TYPE = "msal:popup-relay-response:v1";
+  var POPUP_RELAY_V2_RESPONSE_TYPE = "msal:popup-relay-response:v2";
+  var POPUP_RELAY_READY_TYPE = "msal:popup-relay-ready:v2";
+  var POPUP_RELAY_REQUEST_TYPE = "msal:popup-relay-request:v2";
+  function getPopupRelayProtocolVersion(version3, correlationId = "") {
+    if (version3 === void 0) {
+      return 1;
+    }
+    if (version3 !== 1 && version3 !== 2) {
+      throw createBrowserAuthError(popupRelayUnsupportedFlow, correlationId, "popup_relay_invalid_protocol");
+    }
+    return version3;
+  }
 
   // node_modules/@azure/msal-browser/dist/popup_relay/relayClient.mjs
-  function buildPopupRelayUrl(popupRelayUri, id, action, correlationId) {
-    const req = { id, ...action };
+  function buildPopupRelayUrl(popupRelayUri, id, action, correlationId, protocolVersion) {
+    const version3 = getPopupRelayProtocolVersion(protocolVersion, correlationId);
     const target = new URL(popupRelayUri, window.location.origin);
     if (target.origin !== window.location.origin) {
       throw createBrowserAuthError(popupRelayUnsupportedFlow, correlationId, "popup_relay_cross_origin");
     }
     const hashParams = new URLSearchParams();
-    hashParams.set("req", JSON.stringify(req));
+    if (version3 === 1) {
+      hashParams.set("req", JSON.stringify({ id, ...action }));
+    } else {
+      hashParams.set("id", id);
+    }
     target.hash = hashParams.toString();
     return target.toString();
   }
-  async function waitForPopupRelayResponse(timeoutMs, logger, request, popupWindow, performanceClient) {
+  async function waitForPopupRelayResponse(timeoutMs, logger, request, popupWindow, performanceClient, action, protocolVersion) {
+    const version3 = getPopupRelayProtocolVersion(protocolVersion, request.correlationId);
+    if (version3 === 2 && !action) {
+      throw createBrowserAuthError(popupRelayUnsupportedFlow, request.correlationId, "popup_relay_bad_request");
+    }
     return new Promise((resolve, reject) => {
       const correlationId = request.correlationId;
       logger.verbose("1d05g9", correlationId);
-      performanceClient.addFields({ redirectBridgeTimeoutMs: timeoutMs }, correlationId);
+      performanceClient.addFields({
+        redirectBridgeTimeoutMs: timeoutMs,
+        popupRelayProtocolVersion: version3
+      }, correlationId);
       const { libraryState } = ProtocolUtils_exports.parseRequestState(base64Decode, request.state || "", correlationId);
       const expectedId = libraryState.id;
       const expectedOrigin = window.location.origin;
       let settled = false;
+      let handoffNonce = "";
       const cleanup = () => {
         window.removeEventListener("message", onMessage);
         clearTimeout(timeoutId);
@@ -10618,17 +10842,43 @@
           return;
         }
         const data = event.data;
-        if (!data || data.type !== POPUP_RELAY_RESPONSE_TYPE || data.id !== expectedId) {
+        if (!data || data.id !== expectedId) {
           return;
         }
         if (settled) {
           return;
         }
+        if (version3 === 2 && data.type === POPUP_RELAY_READY_TYPE) {
+          if (handoffNonce || typeof data.nonce !== "string" || !data.nonce) {
+            return;
+          }
+          handoffNonce = data.nonce;
+          try {
+            popupWindow.postMessage({
+              type: POPUP_RELAY_REQUEST_TYPE,
+              id: expectedId,
+              nonce: handoffNonce,
+              request: { id: expectedId, ...action }
+            }, expectedOrigin);
+            performanceClient.addFields({ "ext.popupRelayRequestSent": true }, correlationId);
+          } catch {
+            settled = true;
+            cleanup();
+            logger.error("0sx3jz", correlationId);
+            reject(createBrowserAuthError(popupWindowError, correlationId, "popup_relay_handoff_failed"));
+          }
+          return;
+        }
+        const hasError = typeof data.error === "string" && data.error.length > 0;
+        const responseType = version3 === 1 ? POPUP_RELAY_RESPONSE_TYPE : POPUP_RELAY_V2_RESPONSE_TYPE;
+        if (data.type !== responseType || version3 === 2 && (!handoffNonce && !hasError || handoffNonce && data.nonce !== handoffNonce)) {
+          return;
+        }
         settled = true;
         cleanup();
-        if (data.error) {
-          reject(createBrowserAuthError(data.error, correlationId));
-        } else if (data.payload) {
+        if (hasError) {
+          reject(createBrowserAuthError(data.error, correlationId, data.subError));
+        } else if (typeof data.payload === "string" && data.payload) {
           resolve(data.payload);
         } else {
           reject(createBrowserAuthError(redirectBridgeEmptyResponse, correlationId));
@@ -12049,13 +12299,56 @@
     RequestParameterBuilder_exports.addCorrelationId(queryParams, request.correlationId);
     return Authorize_exports.getAuthorizeUrl(authority, queryParams);
   }
+  async function initializeEarRequest(config, request, logger, performanceClient) {
+    if (!config.experimental.enableAsymmetricEar) {
+      const earJwk = await invokeAsync(generateEarKey, GenerateEarKey, logger, performanceClient, request.correlationId)();
+      return {
+        ...request,
+        earJwk,
+        asymmetricEar: void 0
+      };
+    }
+    try {
+      const { privateJwk, publicJwk } = await invokeAsync(generateAsymmetricEarKey, GenerateAsymmetricEarKey, logger, performanceClient, request.correlationId)();
+      const apv = generateAsymmetricEarApv(publicJwk);
+      const earJwk = base64Encode(JSON.stringify(publicJwk));
+      return {
+        ...request,
+        earJwk,
+        asymmetricEar: { privateJwk, apv }
+      };
+    } catch (error) {
+      if (error instanceof AuthError) {
+        throw error;
+      }
+      throw createBrowserAuthError(
+        asymmetricEarKeyError,
+        request.correlationId,
+        "request_initialization_failed"
+        /* AsymmetricEarSubErrors.RequestInitializationFailed */
+      );
+    }
+  }
   async function getEARFormData(config, authority, request, logger, performanceClient) {
     if (!request.earJwk) {
       throw createBrowserAuthError(earJwkEmpty, request.correlationId);
     }
     const parameters = await getStandardParameters(config, authority, request, logger, performanceClient);
     RequestParameterBuilder_exports.addResponseType(parameters, Constants_exports.OAuthResponseType.IDTOKEN_TOKEN_REFRESHTOKEN);
-    RequestParameterBuilder_exports.addEARParameters(parameters, request.earJwk);
+    try {
+      RequestParameterBuilder_exports.addEARParameters(parameters, request.earJwk, request.asymmetricEar ? base64Encode(JSON.stringify({
+        alg: "ECDH-ES",
+        enc: "A256GCM",
+        apv: request.asymmetricEar.apv
+      })) : void 0);
+    } catch {
+      throw createBrowserAuthError(
+        asymmetricEarKeyError,
+        request.correlationId,
+        "request_encoding_failed"
+        /* AsymmetricEarSubErrors.RequestEncodingFailed */
+      );
+    }
     RequestParameterBuilder_exports.addCodeChallengeParams(parameters, request.codeChallenge, Constants_exports.S256_CODE_CHALLENGE_METHOD);
     RequestParameterBuilder_exports.addExtraParameters(parameters, {
       ...request.extraParameters
@@ -12103,13 +12396,15 @@
     const browserCrypto = new CryptoOps(logger, performanceClient);
     const nativeInteractionClient = new PlatformAuthInteractionClient(config, browserStorage, browserCrypto, logger, eventHandler, config.system.navigationClient, apiId, performanceClient, platformAuthProvider, accountId, nativeStorage, request.correlationId, tokenBindingKeyManager);
     const { userRequestState } = ProtocolUtils_exports.parseRequestState(browserCrypto.base64Decode, request.state, request.correlationId);
+    const brokerRequest = {
+      ...request,
+      state: userRequestState,
+      prompt: void 0
+      // Server should handle the prompt, ideally native broker can do this part silently
+    };
+    delete brokerRequest.asymmetricEar;
     try {
-      return await invokeAsync(nativeInteractionClient.acquireToken.bind(nativeInteractionClient), NativeInteractionClientAcquireToken, logger, performanceClient, request.correlationId)({
-        ...request,
-        state: userRequestState,
-        prompt: void 0
-        // Server should handle the prompt, ideally native broker can do this part silently
-      });
+      return await invokeAsync(nativeInteractionClient.acquireToken.bind(nativeInteractionClient), NativeInteractionClientAcquireToken, logger, performanceClient, request.correlationId)(brokerRequest);
     } catch (e) {
       await removeTokenBindingKeyOnFailure(request, tokenBindingKeyManager, logger, performanceClient);
       throw e;
@@ -12140,7 +12435,23 @@
     if (!request.earJwk) {
       throw createBrowserAuthError(earJwkEmpty, request.correlationId);
     }
-    const decryptedData = JSON.parse(await invokeAsync(decryptEarResponse, DecryptEarResponse, logger, performanceClient, request.correlationId)(request.earJwk, response.ear_jwe));
+    let plaintext;
+    if (request.asymmetricEar) {
+      plaintext = await invokeAsync(decryptAsymmetricEarResponse, DecryptEarResponse, logger, performanceClient, request.correlationId)(request.asymmetricEar.privateJwk, request.asymmetricEar.apv, response.ear_jwe, request.asymmetricEar.apv, { logger, performanceClient, correlationId: request.correlationId });
+    } else {
+      plaintext = await invokeAsync(decryptEarResponse, DecryptEarResponse, logger, performanceClient, request.correlationId)(request.earJwk, response.ear_jwe);
+    }
+    let decryptedData;
+    try {
+      decryptedData = JSON.parse(plaintext);
+    } catch {
+      throw createBrowserAuthError(
+        failedToDecryptEarResponse,
+        request.correlationId,
+        "invalid_decrypted_response_payload"
+        /* AsymmetricEarSubErrors.InvalidDecryptedResponsePayload */
+      );
+    }
     if (decryptedData.accountId) {
       return invokeAsync(handleResponsePlatformBroker, HandleResponsePlatformBroker, logger, performanceClient, request.correlationId)(request, decryptedData.accountId, apiId, config, browserStorage, nativeStorage, eventHandler, logger, performanceClient, platformAuthProvider, tokenBindingKeyManager);
     }
@@ -12346,7 +12657,7 @@
   var DEFAULT_REDIRECT_TIMEOUT_MS = 3e4;
   var DEFAULT_NATIVE_BROKER_HANDSHAKE_TIMEOUT_MS = 2e3;
   function buildConfiguration({ auth: userInputAuth, cache: userInputCache, system: userInputSystem, experimental: userInputExperimental, telemetry: userInputTelemetry }, isBrowserEnvironment) {
-    var _a;
+    var _a, _b;
     const DEFAULT_AUTH_OPTIONS = {
       clientId: "",
       authority: `${Constants_exports.DEFAULT_AUTHORITY}`,
@@ -12356,6 +12667,7 @@
       redirectUri: typeof window !== "undefined" && window.location ? window.location.href.split("?")[0].split("#")[0] : "",
       postLogoutRedirectUri: "",
       popupRelayUri: "",
+      popupRelayProtocolVersion: 1,
       clientCapabilities: [],
       OIDCOptions: {
         responseMode: Constants_exports.ResponseMode.FRAGMENT,
@@ -12415,6 +12727,7 @@
       client: new StubPerformanceClient()
     };
     const DEFAULT_EXPERIMENTAL_OPTIONS = {
+      enableAsymmetricEar: false,
       iframeTimeoutTelemetry: false,
       allowPlatformBrokerWithDOM: false
     };
@@ -12450,10 +12763,16 @@
       system: providedSystemOptions,
       experimental: {
         ...DEFAULT_EXPERIMENTAL_OPTIONS,
-        ...userInputExperimental
+        ...userInputExperimental,
+        enableAsymmetricEar: (_b = userInputExperimental == null ? void 0 : userInputExperimental.enableAsymmetricEar) != null ? _b : false
       },
       telemetry: { ...DEFAULT_TELEMETRY_OPTIONS2, ...userInputTelemetry }
     };
+    if (overlayedConfig.experimental.enableAsymmetricEar && overlayedConfig.system.protocolMode !== ProtocolMode.EAR) {
+      const logger2 = new Logger(providedSystemOptions.loggerOptions, name2, version2);
+      logger2.warning("07xxx7", "");
+      overlayedConfig.experimental.enableAsymmetricEar = false;
+    }
     return overlayedConfig;
   }
 
@@ -13220,10 +13539,11 @@
         } else {
           const navigateUrl = await invokeAsync(getAuthCodeRequestUrl, PerformanceEvents_exports.GetAuthCodeUrl, this.logger, this.performanceClient, correlationId)(this.config, authClient.authority, popupRequest, this.logger, this.performanceClient);
           const popupRelayUri = this.config.auth.popupRelayUri;
-          const popupNavigateUrl = popupRelayUri ? buildPopupRelayUrl(popupRelayUri, this.getRelayStateId(request.state, correlationId), { method: "GET", url: navigateUrl }, correlationId) : navigateUrl;
+          popupParams.relayAction = { method: "GET", url: navigateUrl };
+          const popupNavigateUrl = popupRelayUri ? buildPopupRelayUrl(popupRelayUri, this.getRelayStateId(request.state, correlationId), popupParams.relayAction, correlationId, this.config.auth.popupRelayProtocolVersion) : navigateUrl;
           const popupWindow = this.initiateAuthRequest(popupNavigateUrl, popupParams);
           this.eventHandler.emitEvent(EventType.POPUP_OPENED, correlationId, InteractionType.Popup, { popupWindow }, null);
-          const responseString = await this.waitForPopupResponse(request, popupWindow, popupParams.popupWindowParent);
+          const responseString = await this.waitForPopupResponse(request, popupWindow, popupParams.popupWindowParent, popupParams.relayAction);
           const serverParams = invoke(deserializeResponse, DeserializeResponse, this.logger, this.performanceClient, this.correlationId)(responseString, this.config.auth.OIDCOptions.responseMode, this.logger, this.correlationId);
           return await invokeAsync(handleResponseCode, HandleResponseCode, this.logger, this.performanceClient, correlationId)(popupRequest, serverParams, pkce.verifier, ApiId.acquireTokenPopup, this.config, authClient, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider, this.tokenBindingKeyManager);
         }
@@ -13244,19 +13564,18 @@
     async executeEarFlow(request, popupParams, pkceCodes) {
       const { correlationId, authority, azureCloudOptions, extraQueryParameters, account } = request;
       const discoveredAuthority = await invokeAsync(getDiscoveredAuthority, StandardInteractionClientGetDiscoveredAuthority, this.logger, this.performanceClient, correlationId)(this.config, this.correlationId, this.performanceClient, this.browserStorage, this.logger, authority, azureCloudOptions, extraQueryParameters, account);
-      const earJwk = await invokeAsync(generateEarKey, GenerateEarKey, this.logger, this.performanceClient, correlationId)();
       const pkce = pkceCodes || await invokeAsync(generatePkceCodes, GeneratePkceCodes, this.logger, this.performanceClient, correlationId)(this.performanceClient, this.logger, correlationId);
       const tokenBindingParams = await getTokenBindingRequestParams(request, this.tokenBindingKeyManager, this.logger, this.performanceClient);
-      const popupRequest = {
+      let popupRequest = {
         ...request,
-        earJwk,
         codeChallenge: pkce.challenge,
         ...tokenBindingParams,
         popupOriginCheckDone: this.getPopupOriginCheckDone(popupParams.popupWindowParent)
       };
       try {
+        popupRequest = await initializeEarRequest(this.config, popupRequest, this.logger, this.performanceClient);
         const popupWindow = await this.openPostFormPopup(popupRequest, discoveredAuthority, popupParams, correlationId, true);
-        const responseString = await invokeAsync(this.waitForPopupResponse.bind(this), SilentHandlerMonitorIframeForHash, this.logger, this.performanceClient, correlationId)(popupRequest, popupWindow, popupParams.popupWindowParent);
+        const responseString = await invokeAsync(this.waitForPopupResponse.bind(this), SilentHandlerMonitorIframeForHash, this.logger, this.performanceClient, correlationId)(popupRequest, popupWindow, popupParams.popupWindowParent, popupParams.relayAction);
         const serverParams = invoke(deserializeResponse, DeserializeResponse, this.logger, this.performanceClient, this.correlationId)(responseString, this.config.auth.OIDCOptions.responseMode, this.logger, this.correlationId);
         if (!serverParams.ear_jwe && serverParams.code) {
           const authClient = await invokeAsync(this.createAuthCodeClient.bind(this), StandardInteractionClientCreateAuthCodeClient, this.logger, this.performanceClient, correlationId)({
@@ -13280,7 +13599,7 @@
       const correlationId = request.correlationId;
       const discoveredAuthority = await invokeAsync(getDiscoveredAuthority, StandardInteractionClientGetDiscoveredAuthority, this.logger, this.performanceClient, correlationId)(this.config, this.correlationId, this.performanceClient, this.browserStorage, this.logger);
       const popupWindow = await this.openPostFormPopup(request, discoveredAuthority, popupParams, correlationId, false);
-      const responseString = await invokeAsync(this.waitForPopupResponse.bind(this), SilentHandlerMonitorIframeForHash, this.logger, this.performanceClient, correlationId)(request, popupWindow, popupParams.popupWindowParent);
+      const responseString = await invokeAsync(this.waitForPopupResponse.bind(this), SilentHandlerMonitorIframeForHash, this.logger, this.performanceClient, correlationId)(request, popupWindow, popupParams.popupWindowParent, popupParams.relayAction);
       const serverParams = invoke(deserializeResponse, DeserializeResponse, this.logger, this.performanceClient, this.correlationId)(responseString, this.config.auth.OIDCOptions.responseMode, this.logger, this.correlationId);
       return invokeAsync(handleResponseCode, HandleResponseCode, this.logger, this.performanceClient, correlationId)(request, serverParams, pkceVerifier, ApiId.acquireTokenPopup, this.config, authClient, this.browserStorage, this.nativeStorage, this.eventHandler, this.logger, this.performanceClient, this.platformAuthProvider, this.tokenBindingKeyManager);
     }
@@ -13329,10 +13648,11 @@
         const logoutUri = authClient.getLogoutUri(validRequest);
         this.eventHandler.emitEvent(EventType.LOGOUT_SUCCESS, validRequest.correlationId, InteractionType.Popup, validRequest);
         const popupRelayUri = this.config.auth.popupRelayUri;
-        const popupNavigateUrl = popupRelayUri ? buildPopupRelayUrl(popupRelayUri, this.getRelayStateId(validRequest.state || "", this.correlationId), { method: "GET", url: logoutUri }, this.correlationId) : logoutUri;
+        popupParams.relayAction = { method: "GET", url: logoutUri };
+        const popupNavigateUrl = popupRelayUri ? buildPopupRelayUrl(popupRelayUri, this.getRelayStateId(validRequest.state || "", this.correlationId), popupParams.relayAction, this.correlationId, this.config.auth.popupRelayProtocolVersion) : logoutUri;
         const popupWindow = this.openPopup(popupNavigateUrl, popupParams);
         this.eventHandler.emitEvent(EventType.POPUP_OPENED, validRequest.correlationId, InteractionType.Popup, { popupWindow }, null);
-        await this.waitForPopupResponse(validRequest, popupWindow, popupParams.popupWindowParent).catch(() => {
+        await this.waitForPopupResponse(validRequest, popupWindow, popupParams.popupWindowParent, popupParams.relayAction).catch(() => {
         });
         if (mainWindowRedirectUri) {
           const navigationOptions = {
@@ -13508,11 +13828,12 @@
       if (popupRelayUri) {
         const getFormData = isEAR ? getEARFormData : getCodeFormData;
         const formData = await getFormData(this.config, discoveredAuthority, request, this.logger, this.performanceClient);
-        const relayUrl = buildPopupRelayUrl(popupRelayUri, this.getRelayStateId(request.state, correlationId), {
+        popupParams.relayAction = {
           method: "POST",
           action: formData.action,
           fields: formData.fields
-        }, correlationId);
+        };
+        const relayUrl = buildPopupRelayUrl(popupRelayUri, this.getRelayStateId(request.state, correlationId), popupParams.relayAction, correlationId, this.config.auth.popupRelayProtocolVersion);
         return this.initiateAuthRequest(relayUrl, popupParams);
       }
       const popupWindow = popupParams.popup || this.openPopup("about:blank", popupParams);
@@ -13521,9 +13842,12 @@
       form.submit();
       return popupWindow;
     }
-    async waitForPopupResponse(request, popupWindow, popupWindowParent) {
+    async waitForPopupResponse(request, popupWindow, popupWindowParent, relayAction) {
       if (this.config.auth.popupRelayUri) {
-        return waitForPopupRelayResponse(this.config.system.popupBridgeTimeout, this.logger, request, popupWindow, this.performanceClient);
+        if (this.config.auth.popupRelayProtocolVersion === 2 && !relayAction) {
+          throw createBrowserAuthError(popupRelayUnsupportedFlow, this.correlationId, "popup_relay_bad_request");
+        }
+        return waitForPopupRelayResponse(this.config.system.popupBridgeTimeout, this.logger, request, popupWindow, this.performanceClient, relayAction, this.config.auth.popupRelayProtocolVersion);
       }
       if (this.waitForPopupResponseHook) {
         return this.waitForPopupResponseHook(request, popupWindow, popupWindowParent);
@@ -13629,16 +13953,15 @@
     async executeEarFlow(request) {
       const { correlationId, authority, azureCloudOptions, extraQueryParameters, account } = request;
       const discoveredAuthority = await invokeAsync(getDiscoveredAuthority, StandardInteractionClientGetDiscoveredAuthority, this.logger, this.performanceClient, correlationId)(this.config, this.correlationId, this.performanceClient, this.browserStorage, this.logger, authority, azureCloudOptions, extraQueryParameters, account);
-      const earJwk = await invokeAsync(generateEarKey, GenerateEarKey, this.logger, this.performanceClient, correlationId)();
       const pkceCodes = await invokeAsync(generatePkceCodes, GeneratePkceCodes, this.logger, this.performanceClient, correlationId)(this.performanceClient, this.logger, correlationId);
       const tokenBindingParams = await getTokenBindingRequestParams(request, this.tokenBindingKeyManager, this.logger, this.performanceClient);
-      const redirectRequest = {
+      let redirectRequest = {
         ...request,
-        earJwk,
         codeChallenge: pkceCodes.challenge,
         ...tokenBindingParams
       };
       try {
+        redirectRequest = await initializeEarRequest(this.config, redirectRequest, this.logger, this.performanceClient);
         if (!await isTokenBindingKeyPersistedForRedirect(redirectRequest, this.tokenBindingKeyManager)) {
           throw createBrowserAuthError(cryptoKeyNotFound, this.correlationId);
         }
@@ -13650,9 +13973,10 @@
             reject(createBrowserAuthError(timedOut, "", "failed_to_redirect"));
           }, this.config.system.redirectNavigationTimeout);
         });
-      } catch (e) {
+      } catch (error) {
+        this.browserStorage.resetRequestCache(correlationId);
         await removeTokenBindingKeyOnFailure(redirectRequest, this.tokenBindingKeyManager, this.logger, this.performanceClient);
-        throw e;
+        throw error;
       }
     }
     /**
@@ -13810,7 +14134,6 @@
     /**
      * Redirects window to given URL.
      * @param urlNavigate
-     * @param onRedirectNavigateRequest - onRedirectNavigate callback provided on the request
      */
     async initiateAuthRequest(requestUrl) {
       this.logger.verbose("0yaw2e", this.correlationId);
@@ -14044,13 +14367,11 @@
     async executeEarFlow(request) {
       const { correlationId, authority, azureCloudOptions, extraQueryParameters, account } = request;
       const discoveredAuthority = await invokeAsync(getDiscoveredAuthority, StandardInteractionClientGetDiscoveredAuthority, this.logger, this.performanceClient, correlationId)(this.config, this.correlationId, this.performanceClient, this.browserStorage, this.logger, authority, azureCloudOptions, extraQueryParameters, account);
-      const earJwk = await invokeAsync(generateEarKey, GenerateEarKey, this.logger, this.performanceClient, correlationId)();
       const pkceCodes = await invokeAsync(generatePkceCodes, GeneratePkceCodes, this.logger, this.performanceClient, correlationId)(this.performanceClient, this.logger, correlationId);
-      const silentRequest = {
+      const silentRequest = await initializeEarRequest(this.config, {
         ...request,
-        earJwk,
         codeChallenge: pkceCodes.challenge
-      };
+      }, this.logger, this.performanceClient);
       const iframe = createHiddenIframe();
       const responseType = this.config.auth.OIDCOptions.responseMode;
       let responseString;
@@ -14344,6 +14665,7 @@
     return {
       key: JSON.stringify({
         ...thumbprint,
+        accountTenantId: account.tenantId,
         forceRefresh: !!request.forceRefresh,
         cacheLookupPolicy: (_a = request.cacheLookupPolicy) != null ? _a : CacheLookupPolicy.Default,
         extraParameters: canonicalizeStringDict(request.extraParameters),
@@ -17520,7 +17842,7 @@
 @azure/msal-common/dist-browser/network/INetworkModule.mjs:
 @azure/msal-common/dist-browser/request/BaseAuthRequest.mjs:
 @azure/msal-common/dist-browser/index-browser.mjs:
-  (*! @azure/msal-common v16.16.2 2026-11-12 *)
+  (*! @azure/msal-common v16.17.0 2026-11-18 *)
 
 @azure/msal-browser/dist/telemetry/BrowserPerformanceEvents.mjs:
 @azure/msal-browser/dist/error/BrowserAuthError.mjs:
@@ -17600,5 +17922,5 @@
 @azure/msal-browser/dist/utils/IframeMonitor.mjs:
 @azure/msal-browser/dist/app/PublicClientApplication.mjs:
 @azure/msal-browser/dist/index.mjs:
-  (*! @azure/msal-browser v5.29.1 2026-11-12 *)
+  (*! @azure/msal-browser v5.30.0 2026-11-18 *)
 */
